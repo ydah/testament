@@ -456,9 +456,7 @@ fn extract_literals(line: &str, line_no: usize) -> Vec<LiteralValue> {
             || character == '_'
             || character == '.')
     }) {
-        let kind = if matches!(token, "nil" | "true" | "false") {
-            Some(LiteralKind::Boundary)
-        } else if matches!(token, "0" | "1" | "-1") {
+        let kind = if matches!(token, "nil" | "true" | "false" | "0" | "1" | "-1") {
             Some(LiteralKind::Boundary)
         } else if token.parse::<i64>().is_ok() || token.parse::<f64>().is_ok() {
             Some(LiteralKind::Number)

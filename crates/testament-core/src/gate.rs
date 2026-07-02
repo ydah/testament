@@ -144,10 +144,9 @@ pub fn parse_baseline_scores(input: &str) -> BTreeMap<String, f64> {
         if trimmed.starts_with("\"path\"") {
             current_path = json_string_value(trimmed);
         } else if trimmed.starts_with("\"score\"") {
-            if let Some(path) = current_path.take() {
-                if let Some(score) = json_number_value(trimmed) {
-                    scores.insert(path, score);
-                }
+            let parsed = current_path.take().zip(json_number_value(trimmed));
+            if let Some((path, score)) = parsed {
+                scores.insert(path, score);
             }
         }
     }
