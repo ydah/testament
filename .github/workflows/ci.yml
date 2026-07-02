@@ -14,8 +14,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  checks:
-    name: Rust and probe checks
+  rust:
+    name: Rust checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -35,13 +35,40 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Run fixture report smoke test
+        run: cargo run -p testament-cli -- --config fixtures/evidence/testament.toml report --format json fixtures/ruby/sample_spec.rb
+
+  ruby-probe:
+    name: Ruby probe on ${{ matrix.ruby }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby:
+          - "3.1"
+          - "3.2"
+          - "3.3"
+          - "3.4"
+          - "4.0"
+          - head
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.1"
+          ruby-version: ${{ matrix.ruby }}
 
       - name: Check Ruby probe syntax
         run: ruby -c probes/ruby/testament-probe-ruby/lib/testament/probe.rb
 
-      - name: Run fixture report smoke test
-        run: cargo run -p testament-cli -- --config fixtures/evidence/testament.toml report --format json fixtures/ruby/sample_spec.rb
+      - name: Run Ruby probe smoke test
+        run: |
+          TESTAMENT_PROBE_OUTPUT=/tmp/testament-probe-coverage.json \
+          TESTAMENT_TRACE_OUTPUT=/tmp/testament-probe-trace.json \
+          ruby -Iprobes/ruby/testament-probe-ruby/lib -rtestament/probe -e 'def subject_line; 1; end; def assert(value); raise "failed" unless value; end; Testament::Probe.record("manual case") { assert(subject_line == 1) }'
+          test -s /tmp/testament-probe-coverage.json
+          test -s /tmp/testament-probe-trace.json
