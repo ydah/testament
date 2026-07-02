@@ -115,24 +115,42 @@ pub fn evaluate_ratchet(
         .iter()
         .filter_map(|file| {
             let path = file.ir.path_display();
-            let baseline = baseline_scores.get(&path)?;
-            if file.score + tolerance >= *baseline {
+            let (baseline_path, baseline) = baseline_for_path(baseline_scores, &path)?;
+            if file.score + tolerance >= baseline {
                 return None;
             }
+            let rename_note = if baseline_path == path {
+                String::new()
+            } else {
+                format!(" (matched prior path `{baseline_path}`)")
+            };
             Some(GateViolation {
                 metric_id: "project.file_score".to_owned(),
                 path,
                 level: GateLevel::Error,
                 observed: file.score,
-                threshold: *baseline,
+                threshold: baseline,
                 direction: GateDirection::Ratchet,
                 message: format!(
-                    "file score regressed from {:.3} to {:.3}",
-                    baseline, file.score
+                    "file score regressed from {:.3} to {:.3}{}",
+                    baseline, file.score, rename_note
                 ),
             })
         })
         .collect()
+}
+
+fn baseline_for_path(baseline_scores: &BTreeMap<String, f64>, path: &str) -> Option<(String, f64)> {
+    if let Some(score) = baseline_scores.get(path) {
+        return Some((path.to_owned(), *score));
+    }
+
+    baseline_scores
+        .iter()
+        .map(|(candidate, score)| (candidate, *score, path_similarity(candidate, path)))
+        .filter(|(_, _, similarity)| *similarity >= 0.50)
+        .max_by(|left, right| left.2.total_cmp(&right.2))
+        .map(|(candidate, score, _)| (candidate.clone(), score))
 }
 
 pub fn parse_baseline_scores(input: &str) -> BTreeMap<String, f64> {
@@ -164,6 +182,34 @@ fn json_number_value(line: &str) -> Option<f64> {
     value.parse::<f64>().ok()
 }
 
+fn path_similarity(left: &str, right: &str) -> f64 {
+    if left == right {
+        return 1.0;
+    }
+    let left_tokens = path_tokens(left);
+    let right_tokens = path_tokens(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+    let intersection = left_tokens
+        .iter()
+        .filter(|token| right_tokens.contains(token))
+        .count();
+    let union = left_tokens.len() + right_tokens.len() - intersection;
+    intersection as f64 / union as f64
+}
+
+fn path_tokens(path: &str) -> Vec<String> {
+    let mut tokens = path
+        .split(['/', '_', '-', '.'])
+        .filter(|token| !matches!(*token, "" | "spec" | "test" | "rb"))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +229,18 @@ mod tests {
             "#,
         );
         assert_eq!(scores.get("spec/user_spec.rb"), Some(&0.9));
+    }
+
+    #[test]
+    fn tracks_baseline_across_similar_renames() {
+        let mut scores = BTreeMap::new();
+        scores.insert("spec/models/user_profile_spec.rb".to_owned(), 0.8);
+
+        let matched = baseline_for_path(&scores, "spec/domain/user_profile_spec.rb");
+
+        assert_eq!(
+            matched,
+            Some(("spec/models/user_profile_spec.rb".to_owned(), 0.8))
+        );
     }
 }
