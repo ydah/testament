@@ -10,7 +10,8 @@ name = "testament"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 testament-core = { path = "../testament-core" }
+testament-evidence = { path = "../testament-evidence" }
 testament-metrics = { path = "../testament-metrics" }
 testament-report = { path = "../testament-report" }
-

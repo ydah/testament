@@ -7,6 +7,8 @@ pub enum ReportFormat {
     Tty,
     Json,
     Markdown,
+    Sarif,
+    Junit,
 }
 
 impl ReportFormat {
@@ -15,6 +17,8 @@ impl ReportFormat {
             "tty" | "human" => Some(Self::Tty),
             "json" => Some(Self::Json),
             "md" | "markdown" => Some(Self::Markdown),
+            "sarif" => Some(Self::Sarif),
+            "junit" | "junit-xml" => Some(Self::Junit),
             _ => None,
         }
     }
@@ -25,6 +29,8 @@ pub fn render(report: &ProjectReport, format: ReportFormat) -> String {
         ReportFormat::Tty => render_tty(report),
         ReportFormat::Json => render_json(report),
         ReportFormat::Markdown => render_markdown(report),
+        ReportFormat::Sarif => render_sarif(report),
+        ReportFormat::Junit => render_junit(report),
     }
 }
 
@@ -132,6 +138,118 @@ pub fn render_json(report: &ProjectReport) -> String {
     }
     output.push_str("  ]\n");
     output.push_str("}\n");
+    output
+}
+
+pub fn render_sarif(report: &ProjectReport) -> String {
+    let mut output = String::new();
+    output.push_str("{\n");
+    output.push_str("  \"version\": \"2.1.0\",\n");
+    output.push_str("  \"$schema\": \"https://json.schemastore.org/sarif-2.1.0.json\",\n");
+    output.push_str("  \"runs\": [\n");
+    output.push_str("    {\n");
+    output.push_str(
+        "      \"tool\": {\"driver\": {\"name\": \"testament\", \"informationUri\": \"https://example.invalid/testament\", \"rules\": [",
+    );
+    let rules = collect_rules(report);
+    for (index, rule) in rules.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(&format!(
+            "{{\"id\":\"{}\",\"name\":\"{}\",\"shortDescription\":{{\"text\":\"{}\"}}}}",
+            escape(rule),
+            escape(rule),
+            escape(rule)
+        ));
+    }
+    output.push_str("]}},\n");
+    output.push_str("      \"results\": [\n");
+    let findings = report
+        .files
+        .iter()
+        .flat_map(|file| file.findings.iter().map(move |finding| (file, finding)))
+        .collect::<Vec<_>>();
+    for (index, (file, finding)) in findings.iter().enumerate() {
+        output.push_str("        {\n");
+        output.push_str(&format!(
+            "          \"ruleId\": \"{}\",\n",
+            escape(&finding.rule_id)
+        ));
+        output.push_str(&format!(
+            "          \"level\": \"{}\",\n",
+            sarif_level(finding.severity)
+        ));
+        output.push_str(&format!(
+            "          \"message\": {{\"text\": \"{}\"}},\n",
+            escape(&finding.message)
+        ));
+        output.push_str("          \"locations\": [{\"physicalLocation\": {");
+        output.push_str(&format!(
+            "\"artifactLocation\": {{\"uri\": \"{}\"}}",
+            escape(&file.ir.path_display())
+        ));
+        if let Some(span) = &finding.span {
+            output.push_str(&format!(
+                ", \"region\": {{\"startLine\": {}, \"endLine\": {}}}",
+                span.start_line, span.end_line
+            ));
+        }
+        output.push_str("}}]\n");
+        output.push_str("        }");
+        if index + 1 != findings.len() {
+            output.push(',');
+        }
+        output.push('\n');
+    }
+    output.push_str("      ]\n");
+    output.push_str("    }\n");
+    output.push_str("  ]\n");
+    output.push_str("}\n");
+    output
+}
+
+pub fn render_junit(report: &ProjectReport) -> String {
+    let failures = report
+        .gates
+        .iter()
+        .filter(|gate| matches!(gate.level, GateLevel::Error))
+        .count()
+        + report
+            .files
+            .iter()
+            .flat_map(|file| file.findings.iter())
+            .filter(|finding| matches!(finding.severity, testament_core::Severity::Error))
+            .count();
+    let tests = report.files.len().max(1);
+    let mut output = String::new();
+    output.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    output.push_str(&format!(
+        "<testsuite name=\"testament\" tests=\"{}\" failures=\"{}\">\n",
+        tests, failures
+    ));
+    if report.files.is_empty() {
+        output.push_str("  <testcase classname=\"testament\" name=\"no files\" />\n");
+    }
+    for file in &report.files {
+        output.push_str(&format!(
+            "  <testcase classname=\"testament\" name=\"{}\">\n",
+            xml_escape(&file.ir.path_display())
+        ));
+        for finding in file
+            .findings
+            .iter()
+            .filter(|finding| matches!(finding.severity, testament_core::Severity::Error))
+        {
+            output.push_str(&format!(
+                "    <failure message=\"{}\">{}</failure>\n",
+                xml_escape(&finding.rule_id),
+                xml_escape(&finding.message)
+            ));
+        }
+        output.push_str("  </testcase>\n");
+    }
+    output.push_str("</testsuite>\n");
     output
 }
 
@@ -351,6 +469,34 @@ fn escape(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn sarif_level(severity: testament_core::Severity) -> &'static str {
+    match severity {
+        testament_core::Severity::Info => "note",
+        testament_core::Severity::Warning => "warning",
+        testament_core::Severity::Error => "error",
+    }
+}
+
+fn collect_rules(report: &ProjectReport) -> Vec<String> {
+    let mut rules = report
+        .files
+        .iter()
+        .flat_map(|file| file.findings.iter().map(|finding| finding.rule_id.clone()))
+        .collect::<Vec<_>>();
+    rules.sort();
+    rules.dedup();
+    rules
 }
 
 #[cfg(test)]

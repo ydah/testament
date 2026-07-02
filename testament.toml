@@ -2,7 +2,15 @@
 languages = ["ruby"]
 test_globs = ["spec/**/*_spec.rb", "test/**/*_test.rb", "test/**/test_*.rb"]
 
+[evidence]
+# coverage = { format = "simplecov-json", path = "coverage/.resultset.json" }
+# mutation = { format = "mutant-json", path = "tmp/mutant/report.json" }
+# per_test_coverage = { format = "per-test-json", path = ".testament/per-test-coverage.json" }
+
 [gates]
+"adequacy.mutation_score" = { min = 0.70, when = "evidence-available" }
+"adequacy.branch_coverage" = { min = 0.80, when = "evidence-available" }
+"adequacy.line_coverage" = { min = 0.80, when = "evidence-available" }
 "adequacy.assertion_density" = { min = 0.50 }
 "maintainability.smell_score" = { min = 0.85 }
 "redundancy.candidate_ratio" = { max = 0.15, level = "warn" }
@@ -26,4 +34,3 @@ threshold = 0.88
 
 [rules."smell.magic_number"]
 allow = ["0", "1", "-1"]
-

@@ -1,18 +1,81 @@
-use std::env;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use testament_core::{
-    discover_test_files, evaluate_ratchet, parse_baseline_scores, AppConfig, GateLevel,
-    ProjectReport,
+    AppConfig, GateLevel, ProjectReport, discover_test_files, evaluate_ratchet,
+    parse_baseline_scores,
 };
-use testament_metrics::{analyze_content, analyze_paths, evaluate_project};
-use testament_report::{render, render_json, render_tty, ReportFormat};
+use testament_evidence::load_configured_evidence;
+use testament_metrics::{analyze_content, analyze_paths_with_evidence, evaluate_project};
+use testament_report::{ReportFormat, render, render_json, render_tty};
+
+#[derive(Parser, Debug)]
+#[command(name = "testament")]
+#[command(about = "Research-informed test quality guardrails")]
+struct Cli {
+    #[arg(long, global = true, default_value = ".")]
+    root: PathBuf,
+    #[arg(short, long, global = true, default_value = "testament.toml")]
+    config: PathBuf,
+    #[command(subcommand)]
+    command: Option<CommandArgs>,
+}
+
+#[derive(Subcommand, Debug)]
+enum CommandArgs {
+    Check(AnalyzeArgs),
+    Report(AnalyzeArgs),
+    Baseline(AnalyzeArgs),
+    Explain(ExplainArgs),
+    Diff(DiffArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct AnalyzeArgs {
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Tty)]
+    format: OutputFormat,
+    paths: Vec<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct ExplainArgs {
+    target: String,
+}
+
+#[derive(clap::Args, Debug)]
+struct DiffArgs {
+    #[arg(long)]
+    base: String,
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Tty)]
+    format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum OutputFormat {
+    Tty,
+    Json,
+    Markdown,
+    Sarif,
+    Junit,
+}
+
+impl From<OutputFormat> for ReportFormat {
+    fn from(value: OutputFormat) -> Self {
+        match value {
+            OutputFormat::Tty => Self::Tty,
+            OutputFormat::Json => Self::Json,
+            OutputFormat::Markdown => Self::Markdown,
+            OutputFormat::Sarif => Self::Sarif,
+            OutputFormat::Junit => Self::Junit,
+        }
+    }
+}
 
 fn main() {
-    let exit_code = match run(env::args().skip(1).collect()) {
+    let cli = Cli::parse();
+    let exit_code = match run(cli) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("testament: {error}");
@@ -22,41 +85,38 @@ fn main() {
     process::exit(exit_code);
 }
 
-fn run(args: Vec<String>) -> Result<i32, String> {
-    if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help" | "help") {
-        print_help();
+fn run(cli: Cli) -> Result<i32, String> {
+    let Some(command) = cli.command else {
+        Cli::command().print_help().map_err(|error| error.to_string())?;
+        println!();
         return Ok(0);
-    }
-
-    let command = args[0].as_str();
-    let options = Options::parse(&args[1..])?;
+    };
 
     match command {
-        "check" => check(options),
-        "report" => report(options),
-        "baseline" => baseline(options),
-        "explain" => explain(options),
-        "diff" => diff(options),
-        unknown => Err(format!("unknown command `{unknown}`")),
+        CommandArgs::Check(args) => check(&cli.root, &cli.config, args),
+        CommandArgs::Report(args) => report(&cli.root, &cli.config, args),
+        CommandArgs::Baseline(args) => baseline(&cli.root, &cli.config, args),
+        CommandArgs::Explain(args) => explain(&cli.root, &cli.config, args),
+        CommandArgs::Diff(args) => diff(&cli.root, &cli.config, args),
     }
 }
 
-fn check(options: Options) -> Result<i32, String> {
-    let (config, mut project) = analyze_project(&options)?;
-    apply_ratchet(&options.root, &config, &mut project)?;
-    println!("{}", render(&project, options.format));
+fn check(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, String> {
+    let (config, mut project) = analyze_project(root, config_path, &args.paths)?;
+    apply_ratchet(root, &config, &mut project)?;
+    println!("{}", render(&project, args.format.into()));
     Ok(if project.passed { 0 } else { 1 })
 }
 
-fn report(options: Options) -> Result<i32, String> {
-    let (_, project) = analyze_project(&options)?;
-    println!("{}", render(&project, options.format));
+fn report(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, String> {
+    let (_, project) = analyze_project(root, config_path, &args.paths)?;
+    println!("{}", render(&project, args.format.into()));
     Ok(0)
 }
 
-fn baseline(options: Options) -> Result<i32, String> {
-    let (config, project) = analyze_project(&options)?;
-    let baseline = resolve_path(&options.root, Path::new(&config.ratchet.baseline));
+fn baseline(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, String> {
+    let (config, project) = analyze_project(root, config_path, &args.paths)?;
+    let baseline = resolve_path(root, Path::new(&config.ratchet.baseline));
     if let Some(parent) = baseline.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -65,17 +125,13 @@ fn baseline(options: Options) -> Result<i32, String> {
     Ok(0)
 }
 
-fn explain(options: Options) -> Result<i32, String> {
-    let Some(target) = options.positionals.first() else {
-        return Err("explain requires a file path or metric id".to_owned());
-    };
-    let config = AppConfig::load(&resolve_path(&options.root, &options.config_path))
-        .map_err(|error| error.to_string())?;
-    let path = resolve_path(&options.root, Path::new(target));
+fn explain(root: &Path, config_path: &Path, args: ExplainArgs) -> Result<i32, String> {
+    let config = AppConfig::load(&resolve_path(root, config_path)).map_err(|error| error.to_string())?;
+    let path = resolve_path(root, Path::new(&args.target));
 
-    if path.exists() || target.ends_with(".rb") {
+    if path.exists() || args.target.ends_with(".rb") {
         let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let file = testament_metrics::analyze_content(&path, &content, &config);
+        let file = analyze_content(&path, &content, &config);
         let project = ProjectReport {
             files: vec![file],
             gates: Vec::new(),
@@ -85,44 +141,42 @@ fn explain(options: Options) -> Result<i32, String> {
         return Ok(0);
     }
 
-    explain_metric(target)
+    explain_metric(&args.target)
 }
 
-fn diff(options: Options) -> Result<i32, String> {
-    let Some(base) = options.base.as_deref() else {
-        return Err("diff requires --base <ref>".to_owned());
-    };
-    let config = AppConfig::load(&resolve_path(&options.root, &options.config_path))
+fn diff(root: &Path, config_path: &Path, args: DiffArgs) -> Result<i32, String> {
+    let config = AppConfig::load(&resolve_path(root, config_path)).map_err(|error| error.to_string())?;
+    let paths = changed_test_files(root, &args.base, &config)?;
+    let evidence = load_configured_evidence(root, &config.evidence.inputs());
+    let files = analyze_paths_with_evidence(&paths, &config, &evidence)
         .map_err(|error| error.to_string())?;
-    let paths = changed_test_files(&options.root, base, &config)?;
-    let files = analyze_paths(&paths, &config).map_err(|error| error.to_string())?;
     let mut project = evaluate_project(files, &config);
-    apply_ratchet(&options.root, &config, &mut project)?;
-    println!("{}", render(&project, options.format));
+    apply_ratchet(root, &config, &mut project)?;
+    println!("{}", render(&project, args.format.into()));
     Ok(if project.passed { 0 } else { 1 })
 }
 
-fn analyze_project(options: &Options) -> Result<(AppConfig, ProjectReport), String> {
-    let config_path = resolve_path(&options.root, &options.config_path);
-    let config = AppConfig::load(&config_path).map_err(|error| error.to_string())?;
-    let paths = if options.positionals.is_empty() {
-        discover_test_files(&options.root, &config).map_err(|error| error.to_string())?
+fn analyze_project(
+    root: &Path,
+    config_path: &Path,
+    explicit_paths: &[PathBuf],
+) -> Result<(AppConfig, ProjectReport), String> {
+    let config = AppConfig::load(&resolve_path(root, config_path)).map_err(|error| error.to_string())?;
+    let paths = if explicit_paths.is_empty() {
+        discover_test_files(root, &config).map_err(|error| error.to_string())?
     } else {
-        options
-            .positionals
+        explicit_paths
             .iter()
-            .map(|path| resolve_path(&options.root, Path::new(path)))
+            .map(|path| resolve_path(root, path))
             .collect()
     };
-    let files = analyze_paths(&paths, &config).map_err(|error| error.to_string())?;
+    let evidence = load_configured_evidence(root, &config.evidence.inputs());
+    let files = analyze_paths_with_evidence(&paths, &config, &evidence)
+        .map_err(|error| error.to_string())?;
     Ok((config.clone(), evaluate_project(files, &config)))
 }
 
-fn apply_ratchet(
-    root: &Path,
-    config: &AppConfig,
-    project: &mut ProjectReport,
-) -> Result<(), String> {
+fn apply_ratchet(root: &Path, config: &AppConfig, project: &mut ProjectReport) -> Result<(), String> {
     if !config.ratchet.enabled {
         return Ok(());
     }
@@ -134,8 +188,7 @@ fn apply_ratchet(
 
     let content = fs::read_to_string(baseline).map_err(|error| error.to_string())?;
     let scores = parse_baseline_scores(&content);
-    let mut ratchet_violations =
-        evaluate_ratchet(&scores, config.ratchet.tolerance, &project.files);
+    let mut ratchet_violations = evaluate_ratchet(&scores, config.ratchet.tolerance, &project.files);
     project.gates.append(&mut ratchet_violations);
     project.passed = project
         .gates
@@ -152,11 +205,7 @@ fn explain_metric(metric_id: &str) -> Result<i32, String> {
       end
     end
     "#;
-    let file = analyze_content(
-        Path::new("spec/example_spec.rb"),
-        sample,
-        &AppConfig::default(),
-    );
+    let file = analyze_content(Path::new("spec/example_spec.rb"), sample, &AppConfig::default());
     let Some(outcome) = file.outcomes.iter().find(|outcome| outcome.id == metric_id) else {
         return Err(format!("unknown metric `{metric_id}`"));
     };
@@ -222,109 +271,34 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Options {
-    config_path: PathBuf,
-    root: PathBuf,
-    format: ReportFormat,
-    positionals: Vec<String>,
-    base: Option<String>,
-}
-
-impl Options {
-    fn parse(args: &[String]) -> Result<Self, String> {
-        let mut options = Self {
-            config_path: PathBuf::from("testament.toml"),
-            root: env::current_dir().map_err(|error| error.to_string())?,
-            format: ReportFormat::Tty,
-            positionals: Vec::new(),
-            base: None,
-        };
-
-        let mut index = 0;
-        while index < args.len() {
-            match args[index].as_str() {
-                "--config" | "-c" => {
-                    index += 1;
-                    options.config_path = PathBuf::from(required_arg(args, index, "--config")?);
-                }
-                "--format" | "-f" => {
-                    index += 1;
-                    let value = required_arg(args, index, "--format")?;
-                    options.format = ReportFormat::parse(value)
-                        .ok_or_else(|| format!("unknown report format `{value}`"))?;
-                }
-                "--root" => {
-                    index += 1;
-                    options.root = PathBuf::from(required_arg(args, index, "--root")?);
-                }
-                "--base" => {
-                    index += 1;
-                    options.base = Some(required_arg(args, index, "--base")?.to_owned());
-                }
-                "--json" => options.format = ReportFormat::Json,
-                "--markdown" => options.format = ReportFormat::Markdown,
-                option if option.starts_with('-') => {
-                    return Err(format!("unknown option `{option}`"))
-                }
-                positional => options.positionals.push(positional.to_owned()),
-            }
-            index += 1;
-        }
-
-        Ok(options)
-    }
-}
-
-fn required_arg<'a>(args: &'a [String], index: usize, flag: &str) -> Result<&'a str, String> {
-    args.get(index)
-        .map(String::as_str)
-        .ok_or_else(|| format!("{flag} requires a value"))
-}
-
-fn print_help() {
-    println!(
-        r#"testament
-
-USAGE:
-  testament check [--config testament.toml] [--format tty|json|md] [paths...]
-  testament report [--format tty|json|md] [paths...]
-  testament baseline [--config testament.toml]
-  testament explain <file|metric>
-  testament diff --base <ref> [--format tty|json|md]
-
-COMMANDS:
-  check      analyze tests and fail on error-level gate violations
-  report     analyze tests and print a report without failing the process
-  baseline   write the current JSON report to the configured ratchet baseline
-  explain    show findings for a file or provenance for a metric
-  diff       analyze changed test files from a git base ref
-"#
-    );
-}
-
-#[allow(dead_code)]
-fn _io_error(error: io::Error) -> String {
-    error.to_string()
-}
-
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
 
     #[test]
-    fn parses_common_options() {
-        let options = Options::parse(&[
-            "--config".to_owned(),
-            "custom.toml".to_owned(),
-            "--format".to_owned(),
-            "json".to_owned(),
-            "spec/a_spec.rb".to_owned(),
-        ])
-        .unwrap();
+    fn clap_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
 
-        assert_eq!(options.config_path, PathBuf::from("custom.toml"));
-        assert_eq!(options.format, ReportFormat::Json);
-        assert_eq!(options.positionals, vec!["spec/a_spec.rb"]);
+    #[test]
+    fn parses_common_options() {
+        let cli = Cli::parse_from([
+            "testament",
+            "--config",
+            "custom.toml",
+            "report",
+            "--format",
+            "json",
+            "spec/a_spec.rb",
+        ]);
+
+        assert_eq!(cli.config, PathBuf::from("custom.toml"));
+        let CommandArgs::Report(args) = cli.command.unwrap() else {
+            panic!("expected report command");
+        };
+        assert_eq!(args.format, OutputFormat::Json);
+        assert_eq!(args.paths, vec![PathBuf::from("spec/a_spec.rb")]);
     }
 }

@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use testament_adapter_api::{
+    AdapterResult, DetectScore, FrameworkAdapter, FrameworkSemantics, LanguageAdapter,
+    MatcherSemantics, SyntaxTree,
+};
 use testament_core::{
     stable_test_id, Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture,
     HelperDef, LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag,
@@ -54,6 +58,84 @@ impl RubyAdapter {
         suite.span.end_line = content.lines().count().max(1);
         ir.suites.push(suite);
         ir
+    }
+}
+
+impl LanguageAdapter for RubyAdapter {
+    fn id(&self) -> &'static str {
+        "ruby"
+    }
+
+    fn detect(&self, path: &Path, content: &[u8]) -> DetectScore {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("rb") {
+            return DetectScore::HIGH;
+        }
+        if String::from_utf8_lossy(content).contains("RSpec.describe") {
+            DetectScore::MEDIUM
+        } else {
+            DetectScore::NONE
+        }
+    }
+
+    fn parse(&self, content: &[u8]) -> AdapterResult<SyntaxTree> {
+        Ok(SyntaxTree::new("ruby", content))
+    }
+}
+
+impl FrameworkAdapter for RubyAdapter {
+    fn id(&self) -> &'static str {
+        "ruby-auto"
+    }
+
+    fn language(&self) -> &'static str {
+        "ruby"
+    }
+
+    fn detect(&self, tree: &SyntaxTree, path: &Path) -> DetectScore {
+        let content = tree.text();
+        match detect_framework(&content) {
+            "ruby" if path.extension().and_then(|extension| extension.to_str()) == Some("rb") => {
+                DetectScore::LOW
+            }
+            "ruby" => DetectScore::NONE,
+            _ => DetectScore::HIGH,
+        }
+    }
+
+    fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
+        Ok(Self::lower(path, &tree.text()))
+    }
+
+    fn semantics(&self) -> FrameworkSemantics {
+        FrameworkSemantics {
+            assertion_matchers: vec![
+                matcher("eq", "equality"),
+                matcher("assert_equal", "equality"),
+                matcher("raise_error", "exception"),
+                matcher("change", "change"),
+                matcher("receive", "mock_verification"),
+                matcher("include", "collection"),
+            ],
+            skip_markers: vec![
+                "skip".to_owned(),
+                "pending".to_owned(),
+                "xit".to_owned(),
+                "omit".to_owned(),
+            ],
+            fixture_markers: vec![
+                "before".to_owned(),
+                "let".to_owned(),
+                "let!".to_owned(),
+                "setup".to_owned(),
+            ],
+        }
+    }
+}
+
+fn matcher(matcher: &str, assertion_kind: &str) -> MatcherSemantics {
+    MatcherSemantics {
+        matcher: matcher.to_owned(),
+        assertion_kind: assertion_kind.to_owned(),
     }
 }
 

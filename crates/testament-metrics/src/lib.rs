@@ -1,6 +1,5 @@
 mod adequacy;
 mod redundancy;
-mod ruby;
 mod smells;
 
 use std::collections::BTreeMap;
@@ -9,10 +8,11 @@ use std::io;
 use std::path::Path;
 
 use testament_core::{
-    axis_average, evaluate_gates, AppConfig, Axis, FileReport, MetricOutcome, TestFileIr,
+    axis_average, evaluate_gates, AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome,
+    TestFileIr,
 };
 
-pub use ruby::RubyAdapter;
+pub use testament_lang_ruby::RubyAdapter;
 
 pub fn analyze_file(path: &Path, config: &AppConfig) -> io::Result<FileReport> {
     let content = fs::read_to_string(path)?;
@@ -25,10 +25,39 @@ pub fn analyze_content(path: &Path, content: &str, config: &AppConfig) -> FileRe
 }
 
 pub fn analyze_ir(ir: TestFileIr, config: &AppConfig) -> FileReport {
+    analyze_ir_with_evidence(ir, config, &EvidenceSet::default())
+}
+
+pub fn analyze_file_with_evidence(
+    path: &Path,
+    config: &AppConfig,
+    evidence: &EvidenceSet,
+) -> io::Result<FileReport> {
+    let content = fs::read_to_string(path)?;
+    Ok(analyze_content_with_evidence(
+        path, &content, config, evidence,
+    ))
+}
+
+pub fn analyze_content_with_evidence(
+    path: &Path,
+    content: &str,
+    config: &AppConfig,
+    evidence: &EvidenceSet,
+) -> FileReport {
+    let ir = RubyAdapter::lower(path, content);
+    analyze_ir_with_evidence(ir, config, evidence)
+}
+
+pub fn analyze_ir_with_evidence(
+    ir: TestFileIr,
+    config: &AppConfig,
+    evidence: &EvidenceSet,
+) -> FileReport {
     let mut outcomes = Vec::new();
-    outcomes.extend(adequacy::compute(&ir));
+    outcomes.extend(adequacy::compute(&ir, evidence));
     outcomes.push(smells::compute(&ir, &config.rules));
-    outcomes.extend(redundancy::compute(&ir, &config.rules));
+    outcomes.extend(redundancy::compute(&ir, &config.rules, evidence));
 
     let findings = outcomes
         .iter()
@@ -53,6 +82,17 @@ pub fn analyze_paths(
     paths
         .iter()
         .map(|path| analyze_file(path, config))
+        .collect()
+}
+
+pub fn analyze_paths_with_evidence(
+    paths: &[std::path::PathBuf],
+    config: &AppConfig,
+    evidence: &EvidenceSet,
+) -> io::Result<Vec<FileReport>> {
+    paths
+        .iter()
+        .map(|path| analyze_file_with_evidence(path, config, evidence))
         .collect()
 }
 
