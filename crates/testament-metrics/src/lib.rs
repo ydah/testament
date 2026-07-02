@@ -9,7 +9,7 @@ use std::io;
 use std::path::Path;
 
 use testament_core::{
-    AppConfig, Axis, FileReport, MetricOutcome, TestFileIr, axis_average, evaluate_gates,
+    axis_average, evaluate_gates, AppConfig, Axis, FileReport, MetricOutcome, TestFileIr,
 };
 
 pub use ruby::RubyAdapter;
@@ -46,8 +46,14 @@ pub fn analyze_ir(ir: TestFileIr, config: &AppConfig) -> FileReport {
     }
 }
 
-pub fn analyze_paths(paths: &[std::path::PathBuf], config: &AppConfig) -> io::Result<Vec<FileReport>> {
-    paths.iter().map(|path| analyze_file(path, config)).collect()
+pub fn analyze_paths(
+    paths: &[std::path::PathBuf],
+    config: &AppConfig,
+) -> io::Result<Vec<FileReport>> {
+    paths
+        .iter()
+        .map(|path| analyze_file(path, config))
+        .collect()
 }
 
 pub fn evaluate_project(
@@ -105,4 +111,3 @@ mod tests {
         assert!(report.score > 0.0);
     }
 }
-

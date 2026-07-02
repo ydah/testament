@@ -48,7 +48,10 @@ fn redundancy_candidates(ir: &TestFileIr, rules: &RuleConfig) -> (f64, Vec<Findi
                     right,
                     right.span.clone(),
                     "test case is structurally similar to another case",
-                    format!("representative `{}` similarity {:.3}", left.name, similarity),
+                    format!(
+                        "representative `{}` similarity {:.3}",
+                        left.name, similarity
+                    ),
                 ));
             }
 
@@ -59,7 +62,10 @@ fn redundancy_candidates(ir: &TestFileIr, rules: &RuleConfig) -> (f64, Vec<Findi
                     right,
                     right.span.clone(),
                     "test case repeats assertion subjects already covered nearby",
-                    format!("representative `{}` shares assertion subject/kind", left.name),
+                    format!(
+                        "representative `{}` shares assertion subject/kind",
+                        left.name
+                    ),
                 ));
             }
         }
@@ -100,7 +106,11 @@ fn similarity(left: &TestCase, right: &TestCase) -> f64 {
     }
     let intersection = left_tokens.intersection(&right_tokens).count() as f64;
     let union = left_tokens.union(&right_tokens).count() as f64;
-    if union == 0.0 { 0.0 } else { intersection / union }
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 fn tokens(case: &TestCase) -> BTreeSet<String> {
@@ -121,10 +131,13 @@ fn assertion_overlap(left: &TestCase, right: &TestCase) -> bool {
         .iter()
         .map(|assertion| format!("{}|{}", assertion.kind.as_str(), assertion.subject_expr))
         .collect::<BTreeSet<_>>();
-    right
-        .assertions
-        .iter()
-        .any(|assertion| left_keys.contains(&format!("{}|{}", assertion.kind.as_str(), assertion.subject_expr)))
+    right.assertions.iter().any(|assertion| {
+        left_keys.contains(&format!(
+            "{}|{}",
+            assertion.kind.as_str(),
+            assertion.subject_expr
+        ))
+    })
 }
 
 fn redundancy_finding(
@@ -176,4 +189,3 @@ mod tests {
         assert!(report.metric_value("redundancy.candidate_ratio").unwrap() > 0.0);
     }
 }
-

@@ -41,7 +41,10 @@ pub fn evaluate_gates(config: &AppConfig, files: &[FileReport]) -> GateEvaluatio
 
     for file in files {
         for gate in &config.gates {
-            let metric = file.outcomes.iter().find(|outcome| outcome.id == gate.metric_id);
+            let metric = file
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.id == gate.metric_id);
             let Some(metric) = metric else {
                 if gate.when_evidence_available {
                     continue;
@@ -183,4 +186,3 @@ mod tests {
         assert_eq!(scores.get("spec/user_spec.rb"), Some(&0.9));
     }
 }
-

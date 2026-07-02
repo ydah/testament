@@ -1,0 +1,29 @@
+[project]
+languages = ["ruby"]
+test_globs = ["spec/**/*_spec.rb", "test/**/*_test.rb", "test/**/test_*.rb"]
+
+[gates]
+"adequacy.assertion_density" = { min = 0.50 }
+"maintainability.smell_score" = { min = 0.85 }
+"redundancy.candidate_ratio" = { max = 0.15, level = "warn" }
+
+[ratchet]
+enabled = false
+baseline = ".testament/baseline.json"
+tolerance = 0.0
+
+[rules."smell.assertion_roulette"]
+max_assertions = 3
+
+[rules."smell.eager_test"]
+max_sut_calls = 3
+
+[rules."smell.mock_overuse"]
+max_ratio = 2.0
+
+[rules."redundancy.structural_similarity"]
+threshold = 0.88
+
+[rules."smell.magic_number"]
+allow = ["0", "1", "-1"]
+

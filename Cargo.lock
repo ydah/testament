@@ -27,4 +27,5 @@ name = "testament-report"
 version = "0.1.0"
 dependencies = [
  "testament-core",
+ "testament-metrics",
 ]

@@ -178,7 +178,11 @@ fn detect_magic_number(case: &TestCase, rules: &RuleConfig, findings: &mut Vec<F
             continue;
         };
         for number in numbers_in(expected) {
-            if rules.magic_number_allowlist.iter().any(|allowed| allowed == &number) {
+            if rules
+                .magic_number_allowlist
+                .iter()
+                .any(|allowed| allowed == &number)
+            {
                 continue;
             }
             findings.push(finding(
@@ -239,7 +243,11 @@ fn detect_mock_overuse(case: &TestCase, rules: &RuleConfig, findings: &mut Vec<F
 }
 
 fn file_smells(ir: &TestFileIr) -> Vec<Finding> {
-    let eager_fixtures = ir.shared_fixtures.iter().filter(|fixture| fixture.eager).count();
+    let eager_fixtures = ir
+        .shared_fixtures
+        .iter()
+        .filter(|fixture| fixture.eager)
+        .count();
     if eager_fixtures <= 3 || ir.case_count() == 0 {
         return Vec::new();
     }
@@ -248,7 +256,9 @@ fn file_smells(ir: &TestFileIr) -> Vec<Finding> {
         Axis::Maintainability,
         Severity::Info,
         "file defines many eager shared fixtures",
-        ir.shared_fixtures.first().map(|fixture| fixture.span.clone()),
+        ir.shared_fixtures
+            .first()
+            .map(|fixture| fixture.span.clone()),
         format!("{eager_fixtures} eager fixtures may be unused by some cases"),
         None,
     )]
@@ -256,7 +266,9 @@ fn file_smells(ir: &TestFileIr) -> Vec<Finding> {
 
 fn numbers_in(expression: &str) -> Vec<String> {
     expression
-        .split(|character: char| !(character.is_ascii_digit() || character == '-' || character == '.'))
+        .split(|character: char| {
+            !(character.is_ascii_digit() || character == '-' || character == '.')
+        })
         .filter(|token| !token.is_empty())
         .filter(|token| token.parse::<f64>().is_ok())
         .map(ToOwned::to_owned)
@@ -298,4 +310,3 @@ fn severity_penalty(severity: Severity) -> f64 {
         Severity::Error => 0.35,
     }
 }
-

@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use testament_core::{
-    Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture, HelperDef,
-    LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag, TagKind,
-    TestCase, TestDouble, TestFileIr, TestSuite, stable_test_id,
+    stable_test_id, Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture,
+    HelperDef, LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag,
+    TagKind, TestCase, TestDouble, TestFileIr, TestSuite,
 };
 
 pub struct RubyAdapter;
@@ -83,7 +83,11 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
     let Some(candidate) = normalized
         .strip_prefix("spec/")
         .and_then(|path| path.strip_suffix("_spec.rb"))
-        .or_else(|| normalized.strip_prefix("test/").and_then(|path| path.strip_suffix("_test.rb")))
+        .or_else(|| {
+            normalized
+                .strip_prefix("test/")
+                .and_then(|path| path.strip_suffix("_test.rb"))
+        })
     else {
         return Vec::new();
     };
@@ -96,12 +100,20 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
 }
 
 fn update_suite_hint(trimmed: &str, current_suite: &mut String) {
-    if starts_any(trimmed, &["RSpec.describe", "describe ", "context ", "class "]) {
+    if starts_any(
+        trimmed,
+        &["RSpec.describe", "describe ", "context ", "class "],
+    ) {
         *current_suite = extract_name(trimmed).unwrap_or_else(|| trimmed.to_owned());
     }
 }
 
-fn collect_fixture_or_helper(trimmed: &str, line_no: usize, ir: &mut TestFileIr, suite: &mut TestSuite) {
+fn collect_fixture_or_helper(
+    trimmed: &str,
+    line_no: usize,
+    ir: &mut TestFileIr,
+    suite: &mut TestSuite,
+) {
     if trimmed.starts_with("let!(") || trimmed.starts_with("let ") || trimmed.starts_with("let(") {
         let name = extract_between(trimmed, "(:", ")")
             .or_else(|| extract_between(trimmed, "('", "'"))
@@ -143,7 +155,15 @@ fn start_case(
     let pending = starts_any(trimmed, &["pending ", "pending("]);
     let rspec_case = starts_any(
         trimmed,
-        &["it ", "it(", "specify ", "specify(", "example ", "example(", "scenario "],
+        &[
+            "it ",
+            "it(",
+            "specify ",
+            "specify(",
+            "example ",
+            "example(",
+            "scenario ",
+        ],
     ) || skipped
         || pending;
     let method_case = trimmed.starts_with("def test_");
@@ -245,8 +265,8 @@ fn parse_rspec_assertion(trimmed: &str, line_no: usize) -> Assertion {
     let subject_expr = extract_between(trimmed, "expect(", ")")
         .or_else(|| extract_between(trimmed, "expect {", "}"))
         .unwrap_or_default();
-    let expected_expr = extract_between_after(trimmed, &matcher, "(", ")")
-        .filter(|value| !value.is_empty());
+    let expected_expr =
+        extract_between_after(trimmed, &matcher, "(", ")").filter(|value| !value.is_empty());
 
     Assertion {
         kind: classify_assertion(&matcher, trimmed),
@@ -269,7 +289,10 @@ fn parse_assert_style_assertion(trimmed: &str, line_no: usize) -> Assertion {
     let (expected_expr, subject_expr) = if matcher.contains("equal") && args.len() >= 2 {
         (Some(args[0].clone()), args[1].clone())
     } else {
-        (args.first().cloned(), args.get(1).cloned().unwrap_or_default())
+        (
+            args.first().cloned(),
+            args.get(1).cloned().unwrap_or_default(),
+        )
     };
 
     Assertion {
@@ -317,13 +340,19 @@ fn classify_assertion(matcher: &str, line: &str) -> AssertionKind {
         AssertionKind::Exception
     } else if contains_any(&haystack, &["change", "difference"]) {
         AssertionKind::Change
-    } else if contains_any(&haystack, &["receive", "have_received", "assert_mock", "verify"]) {
+    } else if contains_any(
+        &haystack,
+        &["receive", "have_received", "assert_mock", "verify"],
+    ) {
         AssertionKind::MockVerification
     } else if contains_any(&haystack, &["include", "empty", "contain"]) {
         AssertionKind::Collection
     } else if contains_any(&haystack, &["snapshot", "match_snapshot"]) {
         AssertionKind::Snapshot
-    } else if matcher.starts_with("be") || matcher.starts_with("assert") || matcher.starts_with("refute") {
+    } else if matcher.starts_with("be")
+        || matcher.starts_with("assert")
+        || matcher.starts_with("refute")
+    {
         AssertionKind::Predicate
     } else {
         AssertionKind::Other
@@ -332,12 +361,32 @@ fn classify_assertion(matcher: &str, line: &str) -> AssertionKind {
 
 fn collect_external_refs(case: &mut TestCase, trimmed: &str, line_no: usize) {
     for (kind, needles) in [
-        (ExternalRefKind::FileSystem, &["File.", "FileUtils.", "Dir.", "open("][..]),
-        (ExternalRefKind::Network, &["Net::HTTP", "URI.open", "Faraday.", "HTTP.", "WebMock"][..]),
-        (ExternalRefKind::Database, &["ActiveRecord::Base.connection", ".find_by_sql", "Sequel."][..]),
-        (ExternalRefKind::Time, &["Time.now", "Date.today", "DateTime.now", "Process.clock_gettime"][..]),
+        (
+            ExternalRefKind::FileSystem,
+            &["File.", "FileUtils.", "Dir.", "open("][..],
+        ),
+        (
+            ExternalRefKind::Network,
+            &["Net::HTTP", "URI.open", "Faraday.", "HTTP.", "WebMock"][..],
+        ),
+        (
+            ExternalRefKind::Database,
+            &["ActiveRecord::Base.connection", ".find_by_sql", "Sequel."][..],
+        ),
+        (
+            ExternalRefKind::Time,
+            &[
+                "Time.now",
+                "Date.today",
+                "DateTime.now",
+                "Process.clock_gettime",
+            ][..],
+        ),
         (ExternalRefKind::Sleep, &["sleep ", "sleep("][..]),
-        (ExternalRefKind::GlobalState, &["@@", "$", "ENV[", "Thread.current"][..]),
+        (
+            ExternalRefKind::GlobalState,
+            &["@@", "$", "ENV[", "Thread.current"][..],
+        ),
     ] {
         if contains_any(trimmed, needles) {
             case.external_refs.push(ExternalRef {
@@ -350,7 +399,15 @@ fn collect_external_refs(case: &mut TestCase, trimmed: &str, line_no: usize) {
 }
 
 fn collect_doubles(case: &mut TestCase, trimmed: &str, line_no: usize) {
-    for needle in ["double(", "instance_double", "class_double", "allow(", "receive(", "Minitest::Mock", ".stub("] {
+    for needle in [
+        "double(",
+        "instance_double",
+        "class_double",
+        "allow(",
+        "receive(",
+        "Minitest::Mock",
+        ".stub(",
+    ] {
         if trimmed.contains(needle) {
             case.doubles.push(TestDouble {
                 kind: needle.trim_end_matches('(').to_owned(),
@@ -361,8 +418,10 @@ fn collect_doubles(case: &mut TestCase, trimmed: &str, line_no: usize) {
 }
 
 fn collect_misc_signals(case: &mut TestCase, trimmed: &str, line_no: usize) {
-    if starts_any(trimmed, &["if ", "unless ", "case ", "while ", "until ", "for "])
-        || trimmed.contains(".each do")
+    if starts_any(
+        trimmed,
+        &["if ", "unless ", "case ", "while ", "until ", "for "],
+    ) || trimmed.contains(".each do")
     {
         case.control_flow.push(SourceSpan::line(line_no));
     }
@@ -379,7 +438,9 @@ fn extract_sut_calls(line: &str) -> Vec<String> {
         .filter(|token| {
             !starts_any(
                 token,
-                &["expect.", "allow.", "Time.", "Date.", "File.", "Dir.", "Net.", "URI."],
+                &[
+                    "expect.", "allow.", "Time.", "Date.", "File.", "Dir.", "Net.", "URI.",
+                ],
             )
         })
         .filter(|token| !contains_any(token, &[".to", ".not_to", ".should", ".must_", ".wont_"]))
@@ -390,7 +451,10 @@ fn extract_sut_calls(line: &str) -> Vec<String> {
 fn extract_literals(line: &str, line_no: usize) -> Vec<LiteralValue> {
     let mut literals = Vec::new();
     for token in line.split(|character: char| {
-        !(character.is_ascii_alphanumeric() || character == '-' || character == '_' || character == '.')
+        !(character.is_ascii_alphanumeric()
+            || character == '-'
+            || character == '_'
+            || character == '.')
     }) {
         let kind = if matches!(token, "nil" | "true" | "false") {
             Some(LiteralKind::Boundary)
@@ -421,7 +485,9 @@ fn extract_literals(line: &str, line_no: usize) -> Vec<LiteralValue> {
 
 fn block_delta(trimmed: &str, is_start: bool) -> isize {
     let mut delta = 0;
-    if !is_start && (trimmed.ends_with(" do") || trimmed.contains(" do |") || trimmed.starts_with("def ")) {
+    if !is_start
+        && (trimmed.ends_with(" do") || trimmed.contains(" do |") || trimmed.starts_with("def "))
+    {
         delta += 1;
     }
     if trimmed == "end" || trimmed.starts_with("end ") {
@@ -510,4 +576,3 @@ mod tests {
         assert_eq!(ir.shared_fixtures[0].name, "order");
     }
 }
-

@@ -8,6 +8,8 @@ rust-version.workspace = true
 [dependencies]
 testament-core = { path = "../testament-core" }
 
+[dev-dependencies]
+testament-metrics = { path = "../testament-metrics" }
+
 [lib]
 path = "src/lib.rs"
-

@@ -17,7 +17,12 @@ pub fn matches_any_ignore(path: &Path, patterns: &[String]) -> bool {
         .any(|pattern| matches_pattern(&normalized, &normalize_pattern(pattern)))
 }
 
-fn visit(root: &Path, current: &Path, config: &AppConfig, files: &mut Vec<PathBuf>) -> io::Result<()> {
+fn visit(
+    root: &Path,
+    current: &Path,
+    config: &AppConfig,
+    files: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     if !current.exists() {
         return Ok(());
     }
@@ -107,9 +112,18 @@ mod tests {
 
     #[test]
     fn matches_common_ruby_test_patterns() {
-        assert!(matches_pattern("spec/models/user_spec.rb", "spec/**/*_spec.rb"));
-        assert!(matches_pattern("test/unit/user_test.rb", "test/**/*_test.rb"));
-        assert!(matches_pattern("test/unit/test_user.rb", "test/**/test_*.rb"));
+        assert!(matches_pattern(
+            "spec/models/user_spec.rb",
+            "spec/**/*_spec.rb"
+        ));
+        assert!(matches_pattern(
+            "test/unit/user_test.rb",
+            "test/**/*_test.rb"
+        ));
+        assert!(matches_pattern(
+            "test/unit/test_user.rb",
+            "test/**/test_*.rb"
+        ));
         assert!(!matches_pattern("lib/user.rb", "spec/**/*_spec.rb"));
     }
 }

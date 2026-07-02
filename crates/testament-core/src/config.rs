@@ -51,7 +51,9 @@ impl AppConfig {
                 },
                 "gates" => {
                     if let Some(gate) = GateConfig::parse(key, value) {
-                        config.gates.retain(|existing| existing.metric_id != gate.metric_id);
+                        config
+                            .gates
+                            .retain(|existing| existing.metric_id != gate.metric_id);
                         config.gates.push(gate);
                     }
                 }
@@ -212,10 +214,12 @@ impl RuleConfig {
     pub fn apply(&mut self, rule_id: &str, key: &str, value: &str) {
         match (rule_id, key) {
             ("smell.assertion_roulette", "max_assertions") => {
-                self.assertion_roulette_max = parse_usize(value).unwrap_or(self.assertion_roulette_max);
+                self.assertion_roulette_max =
+                    parse_usize(value).unwrap_or(self.assertion_roulette_max);
             }
             ("smell.eager_test", "max_sut_calls") => {
-                self.eager_test_max_sut_calls = parse_usize(value).unwrap_or(self.eager_test_max_sut_calls);
+                self.eager_test_max_sut_calls =
+                    parse_usize(value).unwrap_or(self.eager_test_max_sut_calls);
             }
             ("smell.mock_overuse", "max_ratio") => {
                 self.mock_overuse_ratio = parse_f64(value).unwrap_or(self.mock_overuse_ratio);
@@ -283,11 +287,7 @@ fn parse_usize(value: &str) -> Option<usize> {
 }
 
 fn unquote(value: &str) -> &str {
-    value
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim()
+    value.trim().trim_matches('"').trim_matches('\'').trim()
 }
 
 #[cfg(test)]
@@ -323,4 +323,3 @@ mod tests {
         );
     }
 }
-

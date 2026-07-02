@@ -70,7 +70,11 @@ fn boundary_signal(ir: &TestFileIr) -> MetricOutcome {
     let cases = ir.cases();
     let with_boundary = cases
         .iter()
-        .filter(|case| case.literals.iter().any(|literal| matches!(literal.kind, testament_core::LiteralKind::Boundary)))
+        .filter(|case| {
+            case.literals
+                .iter()
+                .any(|literal| matches!(literal.kind, testament_core::LiteralKind::Boundary))
+        })
         .count();
     let score = if cases.is_empty() {
         0.0
@@ -93,4 +97,3 @@ fn boundary_signal(ir: &TestFileIr) -> MetricOutcome {
         ),
     }
 }
-

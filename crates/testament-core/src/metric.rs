@@ -15,7 +15,10 @@ impl Provenance {
         approximation: impl Into<String>,
     ) -> Self {
         Self {
-            references: references.iter().map(|reference| (*reference).to_owned()).collect(),
+            references: references
+                .iter()
+                .map(|reference| (*reference).to_owned())
+                .collect(),
             definition: definition.into(),
             approximation: approximation.into(),
         }
