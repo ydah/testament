@@ -1,0 +1,15 @@
+[project]
+languages = ["ruby"]
+test_globs = ["fixtures/ruby/**/*_spec.rb"]
+
+[evidence]
+coverage = { format = "simplecov-json", path = "fixtures/evidence/simplecov.json" }
+mutation = { format = "mutant-json", path = "fixtures/evidence/mutant.json" }
+per_test_coverage = { format = "per-test-json", path = "fixtures/evidence/per-test.json" }
+
+[gates]
+"adequacy.mutation_score" = { min = 0.70, when = "evidence-available" }
+"adequacy.line_coverage" = { min = 0.50, when = "evidence-available" }
+"maintainability.smell_score" = { min = 0.85 }
+"redundancy.candidate_ratio" = { max = 0.50, level = "warn" }
+

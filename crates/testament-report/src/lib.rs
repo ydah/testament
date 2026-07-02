@@ -528,4 +528,26 @@ mod tests {
         assert!(json.contains("\"score\":"));
         assert!(json.contains("\"metrics\":"));
     }
+
+    #[test]
+    fn renders_sarif_and_junit() {
+        let file = analyze_content(
+            Path::new("spec/a_spec.rb"),
+            r#"
+            RSpec.describe A do
+              it "does nothing" do
+              end
+            end
+            "#,
+            &AppConfig::default(),
+        );
+        let report = evaluate_project(vec![file], &AppConfig::default());
+
+        let sarif = render_sarif(&report);
+        let junit = render_junit(&report);
+
+        assert!(sarif.contains("\"version\": \"2.1.0\""));
+        assert!(sarif.contains("smell.unknown_test"));
+        assert!(junit.contains("<testsuite"));
+    }
 }

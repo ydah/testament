@@ -96,4 +96,3 @@ pub trait EvidenceProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn load(&self, input: &Path) -> AdapterResult<EvidenceSet>;
 }
-

@@ -55,4 +55,3 @@ fn matcher(matcher: &str, assertion_kind: &str) -> MatcherSemantics {
         assertion_kind: assertion_kind.to_owned(),
     }
 }
-

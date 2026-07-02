@@ -11,8 +11,8 @@ pub use config::{
 pub use discovery::{discover_test_files, matches_any_ignore};
 pub use evidence::*;
 pub use gate::{
-    evaluate_gates, evaluate_ratchet, parse_baseline_scores, GateDirection, GateEvaluation,
-    GateViolation,
+    GateDirection, GateEvaluation, GateViolation, evaluate_gates, evaluate_ratchet,
+    parse_baseline_scores,
 };
 pub use ir::*;
 pub use metric::*;

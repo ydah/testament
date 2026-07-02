@@ -8,8 +8,8 @@ use std::io;
 use std::path::Path;
 
 use testament_core::{
-    axis_average, evaluate_gates, AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome,
-    TestFileIr,
+    AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
+    evaluate_gates,
 };
 
 pub use testament_lang_ruby::RubyAdapter;
@@ -128,7 +128,12 @@ fn aggregate_score(axis_scores: &BTreeMap<String, f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+    use testament_core::{
+        CoverageEvidence, CoverageRequirement, EvidenceSet, FileCoverage, MutationEvidence,
+        PerTestCoverageEvidence,
+    };
 
     #[test]
     fn analyzes_rspec_file_into_scored_report() {
@@ -149,5 +154,115 @@ mod tests {
         assert_eq!(report.ir.case_count(), 1);
         assert!(report.metric_score("adequacy.assertion_density").is_some());
         assert!(report.score > 0.0);
+    }
+
+    #[test]
+    fn computes_coverage_and_mutation_metrics_when_evidence_exists() {
+        let mut coverage = CoverageEvidence::default();
+        coverage.files.insert(
+            "spec/user_spec.rb".to_owned(),
+            FileCoverage {
+                line_rate: Some(0.8),
+                branch_rate: Some(0.6),
+                covered_lines: [4].into_iter().collect(),
+                executable_lines: [3, 4, 5].into_iter().collect(),
+            },
+        );
+        let evidence = EvidenceSet {
+            coverage: Some(coverage),
+            mutation: Some(MutationEvidence {
+                total: 10,
+                killed: 7,
+                equivalent_marked: 0,
+                per_test_kills: BTreeMap::new(),
+            }),
+            ..EvidenceSet::default()
+        };
+
+        let report = analyze_content_with_evidence(
+            Path::new("spec/user_spec.rb"),
+            r#"
+            RSpec.describe User do
+              it "works" do
+                expect(1).to eq(1)
+              end
+            end
+            "#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(report.metric_value("adequacy.line_coverage"), Some(0.8));
+        assert_eq!(report.metric_value("adequacy.branch_coverage"), Some(0.6));
+        assert_eq!(report.metric_value("adequacy.mutation_score"), Some(0.7));
+    }
+
+    #[test]
+    fn computes_per_test_coverage_redundancy() {
+        let first_case = testament_core::stable_test_id(
+            &PathBuf::from("spec/cart_spec.rb"),
+            "Cart",
+            "counts one item",
+            3,
+        );
+        let second_case = testament_core::stable_test_id(
+            &PathBuf::from("spec/cart_spec.rb"),
+            "Cart",
+            "counts another item",
+            8,
+        );
+        let mut cases = BTreeMap::new();
+        cases.insert(
+            first_case,
+            [
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 1,
+                },
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 2,
+                },
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+        cases.insert(
+            second_case,
+            [CoverageRequirement {
+                path: "lib/cart.rb".to_owned(),
+                line: 1,
+            }]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+
+        let evidence = EvidenceSet {
+            per_test_coverage: Some(PerTestCoverageEvidence { cases }),
+            ..EvidenceSet::default()
+        };
+        let report = analyze_content_with_evidence(
+            Path::new("spec/cart_spec.rb"),
+            r#"
+            RSpec.describe Cart do
+              it "counts one item" do
+                expect(cart.count).to eq(1)
+              end
+
+              it "counts another item" do
+                expect(cart.count).to eq(1)
+              end
+            end
+            "#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert!(
+            report
+                .metric_value("redundancy.coverage_subsumption")
+                .unwrap()
+                > 0.0
+        );
     }
 }

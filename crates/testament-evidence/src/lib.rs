@@ -60,7 +60,11 @@ pub fn load_evidence(format: &str, path: &Path) -> AdapterResult<EvidenceSet> {
             per_test_coverage: Some(parse_per_test_json(&content)?),
             ..EvidenceSet::default()
         },
-        other => return Err(AdapterError::new(format!("unsupported evidence format `{other}`"))),
+        other => {
+            return Err(AdapterError::new(format!(
+                "unsupported evidence format `{other}`"
+            )));
+        }
     };
     evidence.sources.push(EvidenceSource {
         format: format.to_owned(),
@@ -96,7 +100,9 @@ fn parse_simplecov_json(content: &str) -> AdapterResult<CoverageEvidence> {
     if let Some(files) = value.get("files").and_then(Value::as_object) {
         for (path, file) in files {
             let file_coverage = parse_simplecov_file(file);
-            coverage.files.insert(normalize_json_path(path), file_coverage);
+            coverage
+                .files
+                .insert(normalize_json_path(path), file_coverage);
         }
         return Ok(coverage);
     }
@@ -141,7 +147,10 @@ fn parse_simplecov_file(file: &Value) -> FileCoverage {
         }
     }
 
-    coverage.line_rate = ratio(coverage.covered_lines.len(), coverage.executable_lines.len());
+    coverage.line_rate = ratio(
+        coverage.covered_lines.len(),
+        coverage.executable_lines.len(),
+    );
     coverage.branch_rate = file
         .get("branches")
         .and_then(branch_rate_from_simplecov)
@@ -190,7 +199,11 @@ fn parse_lcov(content: &str) -> CoverageEvidence {
             }
         } else if let Some(data) = line.strip_prefix("BRDA:") {
             branch_total += 1;
-            if data.rsplit(',').next().is_some_and(|hits| hits != "-" && hits != "0") {
+            if data
+                .rsplit(',')
+                .next()
+                .is_some_and(|hits| hits != "-" && hits != "0")
+            {
                 branch_covered += 1;
             }
         } else if line == "end_of_record" {
@@ -240,7 +253,8 @@ fn parse_cobertura_xml(content: &str) -> CoverageEvidence {
         let line = raw_line.trim();
         if line.starts_with("<class ") {
             if let Some(path) = current_path.take() {
-                current.line_rate = ratio(current.covered_lines.len(), current.executable_lines.len());
+                current.line_rate =
+                    ratio(current.covered_lines.len(), current.executable_lines.len());
                 evidence.files.insert(path, std::mem::take(&mut current));
             }
             current_path = attr(line, "filename").as_deref().map(normalize_json_path);
@@ -269,12 +283,16 @@ fn parse_cobertura_xml(content: &str) -> CoverageEvidence {
 
 fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
     let value = parse_json(content)?;
-    let mut mutation = MutationEvidence::default();
-
-    mutation.total = usize_value(&value, &["total", "total_mutants", "totalMutants"]).unwrap_or(0);
-    mutation.killed = usize_value(&value, &["killed", "killed_mutants", "killedMutants"]).unwrap_or(0);
-    mutation.equivalent_marked =
-        usize_value(&value, &["equivalent", "equivalent_marked", "equivalentMarked"]).unwrap_or(0);
+    let mut mutation = MutationEvidence {
+        total: usize_value(&value, &["total", "total_mutants", "totalMutants"]).unwrap_or(0),
+        killed: usize_value(&value, &["killed", "killed_mutants", "killedMutants"]).unwrap_or(0),
+        equivalent_marked: usize_value(
+            &value,
+            &["equivalent", "equivalent_marked", "equivalentMarked"],
+        )
+        .unwrap_or(0),
+        per_test_kills: BTreeMap::new(),
+    };
 
     if let Some(mutants) = value
         .get("mutants")
@@ -297,15 +315,18 @@ fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
         );
     }
 
-    if let Some(per_test) = value.get("per_test_kills").or_else(|| value.get("perTestKills")) {
+    if let Some(per_test) = value
+        .get("per_test_kills")
+        .or_else(|| value.get("perTestKills"))
+    {
         mutation.per_test_kills = parse_string_set_map(per_test);
     }
 
-    if let Some(score) = value.get("mutation_score").and_then(Value::as_f64) {
-        if mutation.total == 0 {
-            mutation.total = 1000;
-            mutation.killed = (score * 1000.0).round() as usize;
-        }
+    if mutation.total == 0
+        && let Some(score) = value.get("mutation_score").and_then(Value::as_f64)
+    {
+        mutation.total = 1000;
+        mutation.killed = (score * 1000.0).round() as usize;
     }
 
     Ok(mutation)
@@ -328,7 +349,8 @@ fn parse_per_test_json(content: &str) -> AdapterResult<PerTestCoverageEvidence> 
         if let Some(files) = raw.as_object() {
             for (path, lines) in files {
                 for line in lines.as_array().into_iter().flatten() {
-                    if let Some(line) = line.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                    if let Some(line) = line.as_u64().and_then(|value| usize::try_from(value).ok())
+                    {
                         requirements.insert(CoverageRequirement {
                             path: normalize_json_path(path),
                             line,

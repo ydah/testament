@@ -1,0 +1,8 @@
+{
+  "cases": {
+    "fixture-case": {
+      "lib/cart.rb": [1, 2, 3]
+    }
+  }
+}
+

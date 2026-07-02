@@ -1,0 +1,9 @@
+{
+  "total": 4,
+  "killed": 3,
+  "equivalent_marked": 0,
+  "per_test_kills": {
+    "fixture-case": ["m1", "m2", "m3"]
+  }
+}
+

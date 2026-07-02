@@ -11,27 +11,31 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
         boundary_signal(ir),
     ];
 
-    if let Some(coverage) = evidence.coverage.as_ref() {
-        if let Some(file_coverage) = coverage.file_for_path(&ir.path) {
-            if let Some(line_rate) = file_coverage.line_coverage() {
-                outcomes.push(line_coverage(line_rate));
-                outcomes.push(checked_coverage(ir, file_coverage, line_rate));
-            }
-            if let Some(branch_rate) = file_coverage.branch_coverage() {
-                outcomes.push(branch_coverage(branch_rate));
-            }
+    if let Some(file_coverage) = evidence
+        .coverage
+        .as_ref()
+        .and_then(|coverage| coverage.file_for_path(&ir.path))
+    {
+        if let Some(line_rate) = file_coverage.line_coverage() {
+            outcomes.push(line_coverage(line_rate));
+            outcomes.push(checked_coverage(ir, file_coverage, line_rate));
+        }
+        if let Some(branch_rate) = file_coverage.branch_coverage() {
+            outcomes.push(branch_coverage(branch_rate));
         }
     }
 
-    if let Some(mutation) = evidence.mutation.as_ref() {
-        if let Some(score) = mutation.score() {
-            outcomes.push(mutation_score(
-                score,
-                mutation.killed,
-                mutation.total,
-                mutation.equivalent_marked,
-            ));
-        }
+    if let Some((mutation, score)) = evidence
+        .mutation
+        .as_ref()
+        .and_then(|mutation| mutation.score().map(|score| (mutation, score)))
+    {
+        outcomes.push(mutation_score(
+            score,
+            mutation.killed,
+            mutation.total,
+            mutation.equivalent_marked,
+        ));
     }
 
     outcomes
@@ -163,7 +167,11 @@ fn checked_coverage(ir: &TestFileIr, coverage: &FileCoverage, line_rate: f64) ->
     let assertion_lines = ir
         .cases()
         .iter()
-        .flat_map(|case| case.assertions.iter().map(|assertion| assertion.span.start_line))
+        .flat_map(|case| {
+            case.assertions
+                .iter()
+                .map(|assertion| assertion.span.start_line)
+        })
         .collect::<BTreeSet<_>>();
     let checked_lines = assertion_lines
         .iter()

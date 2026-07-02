@@ -8,31 +8,36 @@ use testament_core::{
 pub fn compute(ir: &TestFileIr, rules: &RuleConfig, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
     let (candidate_ratio, findings) = redundancy_candidates(ir, rules, evidence);
     let structural = structural_similarity_score(ir, &findings);
-    let mut outcomes = vec![MetricOutcome {
-        id: "redundancy.candidate_ratio".to_owned(),
-        axis: Axis::Redundancy,
-        score: Some(1.0 - candidate_ratio),
-        value: candidate_ratio,
-        unit: "ratio".to_owned(),
-        summary: format!(
-            "{:.1}% of cases are redundancy review candidates",
-            candidate_ratio * 100.0
-        ),
-        findings,
-        provenance: Provenance::new(
-            &["R1", "R2", "R3", "R5"],
-            "Redundancy candidates are reported for review rather than automatic deletion.",
-            "Uses mutation/per-test coverage when available, otherwise static structural proxies.",
-        ),
-    }, structural];
+    let mut outcomes = vec![
+        MetricOutcome {
+            id: "redundancy.candidate_ratio".to_owned(),
+            axis: Axis::Redundancy,
+            score: Some(1.0 - candidate_ratio),
+            value: candidate_ratio,
+            unit: "ratio".to_owned(),
+            summary: format!(
+                "{:.1}% of cases are redundancy review candidates",
+                candidate_ratio * 100.0
+            ),
+            findings,
+            provenance: Provenance::new(
+                &["R1", "R2", "R3", "R5"],
+                "Redundancy candidates are reported for review rather than automatic deletion.",
+                "Uses mutation/per-test coverage when available, otherwise static structural proxies.",
+            ),
+        },
+        structural,
+    ];
 
     if let Some(per_test) = evidence.per_test_coverage.as_ref() {
         outcomes.push(coverage_subsumption_score(ir, &per_test.cases));
     }
-    if let Some(mutation) = evidence.mutation.as_ref() {
-        if !mutation.per_test_kills.is_empty() {
-            outcomes.push(mutant_subsumption_score(ir, &mutation.per_test_kills));
-        }
+    if let Some(mutation) = evidence
+        .mutation
+        .as_ref()
+        .filter(|mutation| !mutation.per_test_kills.is_empty())
+    {
+        outcomes.push(mutant_subsumption_score(ir, &mutation.per_test_kills));
     }
     outcomes
 }
@@ -151,7 +156,11 @@ fn add_set_subsumption_findings(
                     right,
                     right.span.clone(),
                     message,
-                    format!("representative `{}` subsumes {} requirement(s)", left.name, right_set.len()),
+                    format!(
+                        "representative `{}` subsumes {} requirement(s)",
+                        left.name,
+                        right_set.len()
+                    ),
                 ));
             }
         }
@@ -266,7 +275,10 @@ fn greedy_representatives(sets: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet
         let Some((case_id, requirements)) = best else {
             break;
         };
-        let covered_now = requirements.intersection(&uncovered).cloned().collect::<Vec<_>>();
+        let covered_now = requirements
+            .intersection(&uncovered)
+            .cloned()
+            .collect::<Vec<_>>();
         if covered_now.is_empty() {
             break;
         }

@@ -5,9 +5,9 @@ use testament_adapter_api::{
     MatcherSemantics, SyntaxTree,
 };
 use testament_core::{
-    stable_test_id, Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture,
-    HelperDef, LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag,
-    TagKind, TestCase, TestDouble, TestFileIr, TestSuite,
+    Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture, HelperDef,
+    LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag, TagKind,
+    TestCase, TestDouble, TestFileIr, TestSuite, stable_test_id,
 };
 
 pub struct RubyAdapter;

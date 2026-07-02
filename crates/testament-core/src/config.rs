@@ -74,10 +74,8 @@ impl AppConfig {
                 config.ratchet.tolerance = tolerance;
             }
         }
-        if let Some(ignore) = raw.ignore {
-            if let Some(paths) = ignore.paths {
-                config.ignore_paths = paths;
-            }
+        if let Some(paths) = raw.ignore.and_then(|ignore| ignore.paths) {
+            config.ignore_paths = paths;
         }
         if let Some(rules) = raw.rules {
             config.rules.apply_raw(rules);
@@ -549,7 +547,11 @@ mod tests {
 
         assert_eq!(config.test_globs, vec!["spec/**/*_spec.rb"]);
         assert_eq!(
-            config.evidence.coverage.as_ref().map(|input| input.format.as_str()),
+            config
+                .evidence
+                .coverage
+                .as_ref()
+                .map(|input| input.format.as_str()),
             Some("simplecov-json")
         );
         assert_eq!(config.rules.eager_test_max_sut_calls, 4);
