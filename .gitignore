@@ -1,5 +1,7 @@
 target/
 .serena/
 .testament/
+coverage/
+tmp/
 *.log
-
+.DS_Store
