@@ -19,6 +19,7 @@ pub struct SyntaxTree {
     pub lines: Vec<SyntaxLine>,
     pub root_kind: String,
     pub has_error: bool,
+    pub nodes: Vec<SyntaxNode>,
 }
 
 impl SyntaxTree {
@@ -45,6 +46,7 @@ impl SyntaxTree {
                 .collect(),
             root_kind: root_kind.into(),
             has_error,
+            nodes: Vec::new(),
         }
     }
 
@@ -61,6 +63,18 @@ impl SyntaxTree {
 pub struct SyntaxLine {
     pub line: usize,
     pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyntaxNode {
+    pub kind: String,
+    pub text: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

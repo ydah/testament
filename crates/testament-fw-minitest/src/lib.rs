@@ -30,7 +30,7 @@ impl FrameworkAdapter for MinitestAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        Ok(RubyAdapter::lower(path, &tree.text()))
+        testament_adapter_api::FrameworkAdapter::lower(&RubyAdapter, tree, path)
     }
 
     fn semantics(&self) -> FrameworkSemantics {

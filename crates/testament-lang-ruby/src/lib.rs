@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use testament_adapter_api::{
     AdapterResult, DetectScore, FrameworkAdapter, FrameworkSemantics, LanguageAdapter,
-    MatcherSemantics, SyntaxTree,
+    MatcherSemantics, SyntaxNode, SyntaxTree,
 };
 use testament_core::{
     Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture, HelperDef,
@@ -90,12 +90,9 @@ impl LanguageAdapter for RubyAdapter {
             testament_adapter_api::AdapterError::new("tree-sitter failed to parse Ruby source")
         })?;
         let root = tree.root_node();
-        Ok(SyntaxTree::from_parts(
-            "ruby",
-            content,
-            root.kind(),
-            root.has_error(),
-        ))
+        let mut syntax = SyntaxTree::from_parts("ruby", content, root.kind(), root.has_error());
+        collect_syntax_nodes(root, content, None, &mut syntax.nodes);
+        Ok(syntax)
     }
 }
 
@@ -120,7 +117,8 @@ impl FrameworkAdapter for RubyAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        let mut ir = Self::lower(path, &tree.text());
+        let mut ir =
+            lower_from_syntax_tree(path, tree).unwrap_or_else(|| Self::lower(path, &tree.text()));
         ir.confidence = if tree.has_error {
             Confidence::Unresolved
         } else {
@@ -153,6 +151,223 @@ impl FrameworkAdapter for RubyAdapter {
             ],
         }
     }
+}
+
+fn collect_syntax_nodes(
+    node: tree_sitter::Node<'_>,
+    content: &[u8],
+    parent: Option<usize>,
+    nodes: &mut Vec<SyntaxNode>,
+) -> usize {
+    let index = nodes.len();
+    let range = node.byte_range();
+    let text = content
+        .get(range.clone())
+        .map(String::from_utf8_lossy)
+        .map(|text| text.into_owned())
+        .unwrap_or_default();
+    nodes.push(SyntaxNode {
+        kind: node.kind().to_owned(),
+        text,
+        start_line: node.start_position().row + 1,
+        end_line: node.end_position().row + 1,
+        start_byte: range.start,
+        end_byte: range.end,
+        parent,
+        children: Vec::new(),
+    });
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let child_index = collect_syntax_nodes(child, content, Some(index), nodes);
+        nodes[index].children.push(child_index);
+    }
+    index
+}
+
+fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> Option<TestFileIr> {
+    let content = tree.text();
+    let framework = detect_framework(&content);
+    let mut ir = TestFileIr::new(path, "ruby", framework);
+    ir.subject_hints.extend(infer_subject_hints(path));
+
+    let suite_nodes = suite_nodes(tree);
+    let case_nodes = case_nodes(tree);
+    if case_nodes.is_empty() {
+        return None;
+    }
+
+    let suite_name = suite_nodes
+        .first()
+        .and_then(|node| extract_name(&node.text))
+        .or_else(|| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "ruby tests".to_owned());
+    let mut suite = TestSuite::new(suite_name, SourceSpan::line(1));
+    let case_spans = case_nodes
+        .iter()
+        .map(|node| expanded_case_span(tree, node))
+        .collect::<Vec<_>>();
+
+    for line in &tree.lines {
+        if case_spans
+            .iter()
+            .any(|span| line.line >= span.start_line && line.line <= span.end_line)
+        {
+            continue;
+        }
+        let trimmed = line.text.trim();
+        collect_fixture_or_helper(trimmed, line.line, &mut ir, &mut suite);
+    }
+
+    for node in case_nodes {
+        let span = expanded_case_span(tree, node);
+        let current_suite =
+            nearest_suite_name(&suite_nodes, node.start_line).unwrap_or_else(|| suite.name.clone());
+        let first_line = tree
+            .lines
+            .iter()
+            .find(|line| line.line == node.start_line)
+            .map(|line| line.text.trim().to_owned())
+            .unwrap_or_else(|| node.text.lines().next().unwrap_or("").trim().to_owned());
+        let Some(mut builder) = start_case(
+            path,
+            framework,
+            &current_suite,
+            &first_line,
+            node.start_line,
+        ) else {
+            continue;
+        };
+        builder.case.span = span.clone();
+
+        for line in tree
+            .lines
+            .iter()
+            .filter(|line| line.line >= span.start_line && line.line <= span.end_line)
+        {
+            collect_case_line(&mut builder.case, line.text.trim(), line.line);
+        }
+
+        builder.case.span = span;
+        suite.cases.push(builder.case);
+    }
+
+    suite.span.end_line = tree.lines.last().map(|line| line.line).unwrap_or(1);
+    ir.suites.push(suite);
+    Some(ir)
+}
+
+fn suite_nodes(tree: &SyntaxTree) -> Vec<&SyntaxNode> {
+    let mut nodes = tree
+        .nodes
+        .iter()
+        .filter(|node| is_suite_node(node))
+        .collect::<Vec<_>>();
+    nodes.sort_by_key(|node| (node.start_line, node.start_byte));
+    nodes
+}
+
+fn case_nodes(tree: &SyntaxTree) -> Vec<&SyntaxNode> {
+    let mut nodes = tree
+        .nodes
+        .iter()
+        .filter(|node| is_case_node(node))
+        .collect::<Vec<_>>();
+    nodes.sort_by_key(|node| (node.start_line, node.start_byte));
+    nodes.dedup_by_key(|node| node.start_byte);
+    nodes
+}
+
+fn is_suite_node(node: &SyntaxNode) -> bool {
+    if !is_call_like(node) {
+        return false;
+    }
+    let text = node.text.trim_start();
+    starts_any(
+        text,
+        &[
+            "RSpec.describe",
+            "RSpec.context",
+            "describe ",
+            "describe(",
+            "context ",
+            "context(",
+        ],
+    )
+}
+
+fn is_case_node(node: &SyntaxNode) -> bool {
+    if !is_call_like(node) {
+        return false;
+    }
+    let text = node.text.trim_start();
+    starts_any(
+        text,
+        &[
+            "it ",
+            "it(",
+            "specify ",
+            "specify(",
+            "example ",
+            "example(",
+            "scenario ",
+            "xit ",
+            "xit(",
+            "xspecify ",
+            "pending ",
+            "pending(",
+            "test ",
+            "test(",
+        ],
+    ) || text.starts_with("def test_")
+}
+
+fn is_call_like(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind.as_str(),
+        "call" | "command" | "method" | "method_add_block"
+    )
+}
+
+fn expanded_case_span(tree: &SyntaxTree, node: &SyntaxNode) -> SourceSpan {
+    let mut start_line = node.start_line;
+    let mut end_line = node.end_line;
+    let mut parent = node.parent;
+
+    while let Some(parent_index) = parent {
+        let Some(parent_node) = tree.nodes.get(parent_index) else {
+            break;
+        };
+        if parent_node.start_line != start_line {
+            break;
+        }
+        if !matches!(
+            parent_node.kind.as_str(),
+            "call" | "command" | "block" | "do_block" | "method_add_block"
+        ) {
+            break;
+        }
+        end_line = end_line.max(parent_node.end_line);
+        start_line = start_line.min(parent_node.start_line);
+        parent = parent_node.parent;
+    }
+
+    SourceSpan {
+        start_line,
+        end_line,
+    }
+}
+
+fn nearest_suite_name(suites: &[&SyntaxNode], line: usize) -> Option<String> {
+    suites
+        .iter()
+        .filter(|suite| suite.start_line <= line)
+        .max_by_key(|suite| suite.start_line)
+        .and_then(|suite| extract_name(&suite.text))
 }
 
 fn matcher(matcher: &str, assertion_kind: &str) -> MatcherSemantics {
@@ -698,8 +913,11 @@ mod tests {
         let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/order_spec.rb")).unwrap();
 
         assert_eq!(tree.root_kind, "program");
+        assert!(tree.nodes.iter().any(|node| node.kind == "call"));
         assert!(!tree.has_error);
         assert_eq!(ir.confidence, Confidence::Exact);
+        assert_eq!(ir.case_count(), 1);
+        assert_eq!(ir.assertion_count(), 1);
     }
 
     #[test]
