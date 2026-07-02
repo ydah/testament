@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use testament_adapter_api::{FrameworkAdapter, LanguageAdapter};
 use testament_core::{
     AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
     evaluate_gates,
@@ -20,7 +21,7 @@ pub fn analyze_file(path: &Path, config: &AppConfig) -> io::Result<FileReport> {
 }
 
 pub fn analyze_content(path: &Path, content: &str, config: &AppConfig) -> FileReport {
-    let ir = RubyAdapter::lower(path, content);
+    let ir = lower_ruby(path, content);
     analyze_ir(ir, config)
 }
 
@@ -45,8 +46,16 @@ pub fn analyze_content_with_evidence(
     config: &AppConfig,
     evidence: &EvidenceSet,
 ) -> FileReport {
-    let ir = RubyAdapter::lower(path, content);
+    let ir = lower_ruby(path, content);
     analyze_ir_with_evidence(ir, config, evidence)
+}
+
+fn lower_ruby(path: &Path, content: &str) -> TestFileIr {
+    let adapter = RubyAdapter;
+    adapter
+        .parse(content.as_bytes())
+        .and_then(|tree| FrameworkAdapter::lower(&adapter, &tree, path))
+        .unwrap_or_else(|_| RubyAdapter::lower(path, content))
 }
 
 pub fn analyze_ir_with_evidence(

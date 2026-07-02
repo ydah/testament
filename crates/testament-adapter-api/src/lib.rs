@@ -17,10 +17,21 @@ impl DetectScore {
 pub struct SyntaxTree {
     pub language: String,
     pub lines: Vec<SyntaxLine>,
+    pub root_kind: String,
+    pub has_error: bool,
 }
 
 impl SyntaxTree {
     pub fn new(language: impl Into<String>, content: &[u8]) -> Self {
+        Self::from_parts(language, content, String::new(), false)
+    }
+
+    pub fn from_parts(
+        language: impl Into<String>,
+        content: &[u8],
+        root_kind: impl Into<String>,
+        has_error: bool,
+    ) -> Self {
         let text = String::from_utf8_lossy(content);
         Self {
             language: language.into(),
@@ -32,6 +43,8 @@ impl SyntaxTree {
                     text: text.to_owned(),
                 })
                 .collect(),
+            root_kind: root_kind.into(),
+            has_error,
         }
     }
 

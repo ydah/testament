@@ -78,7 +78,24 @@ impl LanguageAdapter for RubyAdapter {
     }
 
     fn parse(&self, content: &[u8]) -> AdapterResult<SyntaxTree> {
-        Ok(SyntaxTree::new("ruby", content))
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_ruby::LANGUAGE.into())
+            .map_err(|error| {
+                testament_adapter_api::AdapterError::new(format!(
+                    "failed to load Ruby grammar: {error}"
+                ))
+            })?;
+        let tree = parser.parse(content, None).ok_or_else(|| {
+            testament_adapter_api::AdapterError::new("tree-sitter failed to parse Ruby source")
+        })?;
+        let root = tree.root_node();
+        Ok(SyntaxTree::from_parts(
+            "ruby",
+            content,
+            root.kind(),
+            root.has_error(),
+        ))
     }
 }
 
@@ -103,7 +120,13 @@ impl FrameworkAdapter for RubyAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        Ok(Self::lower(path, &tree.text()))
+        let mut ir = Self::lower(path, &tree.text());
+        ir.confidence = if tree.has_error {
+            Confidence::Unresolved
+        } else {
+            Confidence::Exact
+        };
+        Ok(ir)
     }
 
     fn semantics(&self) -> FrameworkSemantics {
@@ -632,6 +655,7 @@ fn is_ident_or_dot(character: char) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+    use testament_adapter_api::{FrameworkAdapter, LanguageAdapter};
 
     #[test]
     fn lowers_rspec_cases_and_smell_signals() {
@@ -654,5 +678,39 @@ mod tests {
         assert_eq!(case.assertions.len(), 1);
         assert_eq!(case.external_refs[0].kind, ExternalRefKind::Sleep);
         assert_eq!(ir.shared_fixtures[0].name, "order");
+    }
+
+    #[test]
+    fn parses_with_tree_sitter_and_marks_confidence() {
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(
+                br#"
+                RSpec.describe Order do
+                  it "works" do
+                    expect(1).to eq(1)
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/order_spec.rb")).unwrap();
+
+        assert_eq!(tree.root_kind, "program");
+        assert!(!tree.has_error);
+        assert_eq!(ir.confidence, Confidence::Exact);
+    }
+
+    #[test]
+    fn marks_syntax_errors_as_unresolved() {
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(b"RSpec.describe Order do\n  it 'breaks'\n")
+            .unwrap();
+        let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/order_spec.rb")).unwrap();
+
+        assert!(tree.has_error);
+        assert_eq!(ir.confidence, Confidence::Unresolved);
     }
 }

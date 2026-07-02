@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+testament-adapter-api = { path = "../testament-adapter-api" }
 testament-core = { path = "../testament-core" }
 testament-lang-ruby = { path = "../testament-lang-ruby" }
 
