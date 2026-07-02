@@ -9,7 +9,7 @@ use std::path::Path;
 
 use testament_adapter_api::{FrameworkAdapter, LanguageAdapter};
 use testament_core::{
-    AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
+    AppConfig, Axis, Confidence, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
     evaluate_gates,
 };
 
@@ -55,7 +55,13 @@ fn lower_ruby(path: &Path, content: &str) -> TestFileIr {
     adapter
         .parse(content.as_bytes())
         .and_then(|tree| FrameworkAdapter::lower(&adapter, &tree, path))
-        .unwrap_or_else(|_| RubyAdapter::lower(path, content))
+        .unwrap_or_else(|_| unresolved_ruby_ir(path))
+}
+
+fn unresolved_ruby_ir(path: &Path) -> TestFileIr {
+    let mut ir = TestFileIr::new(path, "ruby", "ruby");
+    ir.confidence = Confidence::Unresolved;
+    ir
 }
 
 pub fn analyze_ir_with_evidence(

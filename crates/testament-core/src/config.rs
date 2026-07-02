@@ -22,13 +22,16 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let content = fs::read_to_string(path)?;
-        Ok(Self::parse(&content))
+        Self::try_parse(&content)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
     }
 
     pub fn parse(input: &str) -> Self {
-        toml::from_str::<RawConfig>(input)
-            .map(Self::from_raw)
-            .unwrap_or_else(|_| Self::parse_legacy(input))
+        Self::try_parse(input).expect("invalid testament TOML")
+    }
+
+    pub fn try_parse(input: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str::<RawConfig>(input).map(Self::from_raw)
     }
 
     fn from_raw(raw: RawConfig) -> Self {
@@ -80,72 +83,6 @@ impl AppConfig {
         if let Some(rules) = raw.rules {
             config.rules.apply_raw(rules);
         }
-        config
-    }
-
-    fn parse_legacy(input: &str) -> Self {
-        let mut config = Self::default();
-        let mut section = String::new();
-        let mut rule_section = None::<String>;
-
-        for raw_line in input.lines() {
-            let line = strip_comment(raw_line).trim().to_owned();
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.starts_with('[') && line.ends_with(']') {
-                let name = line.trim_matches(['[', ']']);
-                section = name.to_owned();
-                rule_section = parse_rule_section(name);
-                continue;
-            }
-
-            let Some((key, value)) = split_assignment(&line) else {
-                continue;
-            };
-
-            match section.as_str() {
-                "project" => match key {
-                    "languages" => config.languages = parse_array(value),
-                    "test_globs" => config.test_globs = parse_array(value),
-                    _ => {}
-                },
-                "evidence" => match key {
-                    "coverage" => config.evidence.coverage = EvidenceInput::parse_inline(value),
-                    "mutation" => config.evidence.mutation = EvidenceInput::parse_inline(value),
-                    "per_test_coverage" => {
-                        config.evidence.per_test_coverage = EvidenceInput::parse_inline(value);
-                    }
-                    _ => {}
-                },
-                "gates" => {
-                    if let Some(gate) = GateConfig::parse(key, value) {
-                        config
-                            .gates
-                            .retain(|existing| existing.metric_id != gate.metric_id);
-                        config.gates.push(gate);
-                    }
-                }
-                "ratchet" => match key {
-                    "enabled" => config.ratchet.enabled = parse_bool(value),
-                    "baseline" => config.ratchet.baseline = unquote(value).to_owned(),
-                    "tolerance" => config.ratchet.tolerance = parse_f64(value).unwrap_or(0.0),
-                    _ => {}
-                },
-                "ignore" => {
-                    if key == "paths" {
-                        config.ignore_paths = parse_array(value);
-                    }
-                }
-                _ => {
-                    if let Some(rule_id) = &rule_section {
-                        config.rules.apply(rule_id, key, value);
-                    }
-                }
-            }
-        }
-
         config
     }
 }
@@ -231,28 +168,6 @@ impl EvidenceInput {
             path: raw.path,
         }
     }
-
-    fn parse_inline(value: &str) -> Option<Self> {
-        let body = value.trim().trim_start_matches('{').trim_end_matches('}');
-        let mut format = None::<String>;
-        let mut path = None::<String>;
-
-        for part in body.split(',') {
-            let Some((name, raw)) = split_assignment(part.trim()) else {
-                continue;
-            };
-            match name {
-                "format" => format = Some(unquote(raw).to_owned()),
-                "path" => path = Some(unquote(raw).to_owned()),
-                _ => {}
-            }
-        }
-
-        Some(Self {
-            format: format?,
-            path: path?,
-        })
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -262,39 +177,6 @@ pub struct GateConfig {
     pub max: Option<f64>,
     pub level: GateLevel,
     pub when_evidence_available: bool,
-}
-
-impl GateConfig {
-    fn parse(key: &str, value: &str) -> Option<Self> {
-        let metric_id = unquote(key).to_owned();
-        if metric_id.is_empty() {
-            return None;
-        }
-
-        let body = value.trim().trim_start_matches('{').trim_end_matches('}');
-        let mut gate = Self {
-            metric_id,
-            min: None,
-            max: None,
-            level: GateLevel::Error,
-            when_evidence_available: false,
-        };
-
-        for part in body.split(',') {
-            let Some((name, raw)) = split_assignment(part.trim()) else {
-                continue;
-            };
-            match name {
-                "min" => gate.min = parse_f64(raw),
-                "max" => gate.max = parse_f64(raw),
-                "level" => gate.level = GateLevel::parse(unquote(raw)),
-                "when" => gate.when_evidence_available = unquote(raw) == "evidence-available",
-                _ => {}
-            }
-        }
-
-        Some(gate)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -347,28 +229,6 @@ pub struct RuleConfig {
 }
 
 impl RuleConfig {
-    pub fn apply(&mut self, rule_id: &str, key: &str, value: &str) {
-        match (rule_id, key) {
-            ("smell.assertion_roulette", "max_assertions") => {
-                self.assertion_roulette_max =
-                    parse_usize(value).unwrap_or(self.assertion_roulette_max);
-            }
-            ("smell.eager_test", "max_sut_calls") => {
-                self.eager_test_max_sut_calls =
-                    parse_usize(value).unwrap_or(self.eager_test_max_sut_calls);
-            }
-            ("smell.mock_overuse", "max_ratio") => {
-                self.mock_overuse_ratio = parse_f64(value).unwrap_or(self.mock_overuse_ratio);
-            }
-            ("redundancy.structural_similarity", "threshold") => {
-                self.structural_similarity_threshold =
-                    parse_f64(value).unwrap_or(self.structural_similarity_threshold);
-            }
-            ("smell.magic_number", "allow") => self.magic_number_allowlist = parse_array(value),
-            _ => {}
-        }
-    }
-
     fn apply_raw(&mut self, rules: BTreeMap<String, toml::Value>) {
         for (rule_id, value) in rules {
             let Some(table) = value.as_table() else {
@@ -475,50 +335,6 @@ struct RawRatchet {
 #[derive(Debug, Deserialize)]
 struct RawIgnore {
     paths: Option<Vec<String>>,
-}
-
-fn parse_rule_section(section: &str) -> Option<String> {
-    if !section.starts_with("rules.") {
-        return None;
-    }
-    Some(unquote(section.trim_start_matches("rules.")).to_owned())
-}
-
-fn strip_comment(line: &str) -> &str {
-    line.split('#').next().unwrap_or(line)
-}
-
-fn split_assignment(line: &str) -> Option<(&str, &str)> {
-    let (key, value) = line.split_once('=')?;
-    Some((key.trim(), value.trim()))
-}
-
-fn parse_array(value: &str) -> Vec<String> {
-    let value = value.trim();
-    let inner = value.trim_start_matches('[').trim_end_matches(']');
-    inner
-        .split(',')
-        .map(str::trim)
-        .map(unquote)
-        .filter(|item| !item.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn parse_bool(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("true")
-}
-
-fn parse_f64(value: &str) -> Option<f64> {
-    unquote(value).parse::<f64>().ok()
-}
-
-fn parse_usize(value: &str) -> Option<usize> {
-    unquote(value).parse::<usize>().ok()
-}
-
-fn unquote(value: &str) -> &str {
-    value.trim().trim_matches('"').trim_matches('\'').trim()
 }
 
 #[cfg(test)]

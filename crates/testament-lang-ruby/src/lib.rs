@@ -12,55 +12,6 @@ use testament_core::{
 
 pub struct RubyAdapter;
 
-impl RubyAdapter {
-    pub fn lower(path: &Path, content: &str) -> TestFileIr {
-        let framework = detect_framework(content);
-        let mut ir = TestFileIr::new(path, "ruby", framework);
-        ir.subject_hints.extend(infer_subject_hints(path));
-
-        let suite_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("ruby tests")
-            .to_owned();
-        let mut suite = TestSuite::new(suite_name.clone(), SourceSpan::line(1));
-        let mut current_suite = suite_name;
-        let mut current = None::<CaseBuilder>;
-
-        for (index, line) in content.lines().enumerate() {
-            let line_no = index + 1;
-            let trimmed = line.trim();
-
-            if current.is_none() {
-                update_suite_hint(trimmed, &mut current_suite);
-                collect_fixture_or_helper(trimmed, line_no, &mut ir, &mut suite);
-                if let Some(case) = start_case(path, framework, &current_suite, trimmed, line_no) {
-                    current = Some(case);
-                }
-            }
-
-            if let Some(builder) = current.as_mut() {
-                collect_case_line(&mut builder.case, trimmed, line_no);
-                builder.depth += block_delta(trimmed, builder.case.span.start_line == line_no);
-                if builder.depth <= 0 {
-                    let mut finished = current.take().expect("case exists");
-                    finished.case.span.end_line = line_no;
-                    suite.cases.push(finished.case);
-                }
-            }
-        }
-
-        if let Some(mut builder) = current {
-            builder.case.span.end_line = content.lines().count().max(builder.case.span.start_line);
-            suite.cases.push(builder.case);
-        }
-
-        suite.span.end_line = content.lines().count().max(1);
-        ir.suites.push(suite);
-        ir
-    }
-}
-
 impl LanguageAdapter for RubyAdapter {
     fn id(&self) -> &'static str {
         "ruby"
@@ -117,8 +68,7 @@ impl FrameworkAdapter for RubyAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        let mut ir =
-            lower_from_syntax_tree(path, tree).unwrap_or_else(|| Self::lower(path, &tree.text()));
+        let mut ir = lower_from_syntax_tree(path, tree);
         ir.confidence = if tree.has_error {
             Confidence::Unresolved
         } else {
@@ -185,7 +135,7 @@ fn collect_syntax_nodes(
     index
 }
 
-fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> Option<TestFileIr> {
+fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> TestFileIr {
     let content = tree.text();
     let framework = detect_framework(&content);
     let mut ir = TestFileIr::new(path, "ruby", framework);
@@ -193,9 +143,6 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> Option<TestFileIr> 
 
     let suite_nodes = suite_nodes(tree);
     let case_nodes = case_nodes(tree);
-    if case_nodes.is_empty() {
-        return None;
-    }
 
     let suite_name = suite_nodes
         .first()
@@ -233,7 +180,7 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> Option<TestFileIr> 
             .find(|line| line.line == node.start_line)
             .map(|line| line.text.trim().to_owned())
             .unwrap_or_else(|| node.text.lines().next().unwrap_or("").trim().to_owned());
-        let Some(mut builder) = start_case(
+        let Some(mut case) = start_case(
             path,
             framework,
             &current_suite,
@@ -242,23 +189,23 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> Option<TestFileIr> 
         ) else {
             continue;
         };
-        builder.case.span = span.clone();
+        case.span = span.clone();
 
         for line in tree
             .lines
             .iter()
             .filter(|line| line.line >= span.start_line && line.line <= span.end_line)
         {
-            collect_case_line(&mut builder.case, line.text.trim(), line.line);
+            collect_case_line(&mut case, line.text.trim(), line.line);
         }
 
-        builder.case.span = span;
-        suite.cases.push(builder.case);
+        case.span = span;
+        suite.cases.push(case);
     }
 
     suite.span.end_line = tree.lines.last().map(|line| line.line).unwrap_or(1);
     ir.suites.push(suite);
-    Some(ir)
+    ir
 }
 
 fn suite_nodes(tree: &SyntaxTree) -> Vec<&SyntaxNode> {
@@ -377,11 +324,6 @@ fn matcher(matcher: &str, assertion_kind: &str) -> MatcherSemantics {
     }
 }
 
-struct CaseBuilder {
-    case: TestCase,
-    depth: isize,
-}
-
 fn detect_framework(content: &str) -> &'static str {
     if content.contains("RSpec.describe")
         || content.contains("RSpec.context")
@@ -417,15 +359,6 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
         path: PathBuf::from(format!("lib/{candidate}.rb")),
         confidence: Confidence::Approximate,
     }]
-}
-
-fn update_suite_hint(trimmed: &str, current_suite: &mut String) {
-    if starts_any(
-        trimmed,
-        &["RSpec.describe", "describe ", "context ", "class "],
-    ) {
-        *current_suite = extract_name(trimmed).unwrap_or_else(|| trimmed.to_owned());
-    }
 }
 
 fn collect_fixture_or_helper(
@@ -470,7 +403,7 @@ fn start_case(
     suite: &str,
     trimmed: &str,
     line_no: usize,
-) -> Option<CaseBuilder> {
+) -> Option<TestCase> {
     let skipped = starts_any(trimmed, &["xit ", "xit(", "xspecify ", "skip "]);
     let pending = starts_any(trimmed, &["pending ", "pending("]);
     let rspec_case = starts_any(
@@ -527,7 +460,7 @@ fn start_case(
         });
     }
 
-    Some(CaseBuilder { case, depth: 1 })
+    Some(case)
 }
 
 fn collect_case_line(case: &mut TestCase, trimmed: &str, line_no: usize) {
@@ -801,19 +734,6 @@ fn extract_literals(line: &str, line_no: usize) -> Vec<LiteralValue> {
     literals
 }
 
-fn block_delta(trimmed: &str, is_start: bool) -> isize {
-    let mut delta = 0;
-    if !is_start
-        && (trimmed.ends_with(" do") || trimmed.contains(" do |") || trimmed.starts_with("def "))
-    {
-        delta += 1;
-    }
-    if trimmed == "end" || trimmed.starts_with("end ") {
-        delta -= 1;
-    }
-    delta
-}
-
 fn looks_like_sut_call(trimmed: &str) -> bool {
     !extract_sut_calls(trimmed).is_empty()
 }
@@ -874,9 +794,10 @@ mod tests {
 
     #[test]
     fn lowers_rspec_cases_and_smell_signals() {
-        let ir = RubyAdapter::lower(
-            Path::new("spec/order_spec.rb"),
-            r#"
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(
+                br#"
             RSpec.describe Order do
               let(:order) { described_class.new }
 
@@ -886,7 +807,9 @@ mod tests {
               end
             end
             "#,
-        );
+            )
+            .unwrap();
+        let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/order_spec.rb")).unwrap();
 
         let case = ir.cases()[0];
         assert_eq!(ir.framework, "rspec");
