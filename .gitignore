@@ -1,0 +1,5 @@
+target/
+.serena/
+.testament/
+*.log
+

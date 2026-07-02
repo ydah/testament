@@ -1,0 +1,16 @@
+[package]
+name = "testament-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "testament"
+path = "src/main.rs"
+
+[dependencies]
+testament-core = { path = "../testament-core" }
+testament-metrics = { path = "../testament-metrics" }
+testament-report = { path = "../testament-report" }
+
