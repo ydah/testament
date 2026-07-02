@@ -8,7 +8,9 @@ use testament_core::{
     parse_baseline_scores,
 };
 use testament_evidence::load_configured_evidence;
-use testament_metrics::{analyze_content, analyze_paths_with_evidence, evaluate_project};
+use testament_metrics::{
+    analyze_content_with_evidence, analyze_paths_with_evidence, evaluate_project, metric_catalog,
+};
 use testament_report::{ReportFormat, render, render_json, render_tty};
 
 #[derive(Parser, Debug)]
@@ -134,7 +136,8 @@ fn explain(root: &Path, config_path: &Path, args: ExplainArgs) -> Result<i32, St
 
     if path.exists() || args.target.ends_with(".rb") {
         let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let file = analyze_content(&path, &content, &config);
+        let evidence = load_configured_evidence(root, &config.evidence.inputs());
+        let file = analyze_content_with_evidence(&path, &content, &config, &evidence);
         let project = ProjectReport {
             files: vec![file],
             gates: Vec::new(),
@@ -144,7 +147,7 @@ fn explain(root: &Path, config_path: &Path, args: ExplainArgs) -> Result<i32, St
         return Ok(0);
     }
 
-    explain_metric(&args.target)
+    explain_metric(&args.target, &config)
 }
 
 fn diff(root: &Path, config_path: &Path, args: DiffArgs) -> Result<i32, String> {
@@ -207,20 +210,9 @@ fn apply_ratchet(
     Ok(())
 }
 
-fn explain_metric(metric_id: &str) -> Result<i32, String> {
-    let sample = r#"
-    RSpec.describe Example do
-      it "works" do
-        expect(1).to eq(1)
-      end
-    end
-    "#;
-    let file = analyze_content(
-        Path::new("spec/example_spec.rb"),
-        sample,
-        &AppConfig::default(),
-    );
-    let Some(outcome) = file.outcomes.iter().find(|outcome| outcome.id == metric_id) else {
+fn explain_metric(metric_id: &str, config: &AppConfig) -> Result<i32, String> {
+    let catalog = metric_catalog(config);
+    let Some(outcome) = catalog.iter().find(|outcome| outcome.id == metric_id) else {
         return Err(format!("unknown metric `{metric_id}`"));
     };
 

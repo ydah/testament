@@ -6,8 +6,9 @@ use testament_adapter_api::{
 };
 use testament_core::{
     Assertion, AssertionKind, Confidence, ExternalRef, ExternalRefKind, Fixture, HelperDef,
-    LiteralKind, LiteralValue, SourceSpan, Statement, StatementRole, SubjectHint, Tag, TagKind,
-    TestCase, TestDouble, TestFileIr, TestSuite, stable_test_id,
+    LiteralKind, LiteralValue, SharedExample, SharedExampleRef, SourceSpan, Statement,
+    StatementRole, SubjectHint, Tag, TagKind, TestCase, TestDouble, TestFileIr, TestSuite,
+    stable_test_id,
 };
 
 pub struct RubyAdapter;
@@ -142,7 +143,17 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> TestFileIr {
     ir.subject_hints.extend(infer_subject_hints(path));
 
     let suite_nodes = suite_nodes(tree);
-    let case_nodes = case_nodes(tree);
+    let shared_nodes = shared_example_nodes(tree);
+    let shared_spans = shared_nodes
+        .iter()
+        .map(|node| expanded_case_span(tree, node))
+        .collect::<Vec<_>>();
+    let all_case_nodes = case_nodes(tree);
+    let case_nodes = all_case_nodes
+        .iter()
+        .copied()
+        .filter(|node| !is_inside_spans(node.start_line, &shared_spans))
+        .collect::<Vec<_>>();
 
     let suite_name = suite_nodes
         .first()
@@ -154,6 +165,15 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> TestFileIr {
         })
         .unwrap_or_else(|| "ruby tests".to_owned());
     let mut suite = TestSuite::new(suite_name, SourceSpan::line(1));
+
+    for shared_node in &shared_nodes {
+        if let Some(shared_example) =
+            lower_shared_example(path, framework, tree, shared_node, &all_case_nodes)
+        {
+            ir.shared_examples.push(shared_example);
+        }
+    }
+
     let case_spans = case_nodes
         .iter()
         .map(|node| expanded_case_span(tree, node))
@@ -162,45 +182,37 @@ fn lower_from_syntax_tree(path: &Path, tree: &SyntaxTree) -> TestFileIr {
     for line in &tree.lines {
         if case_spans
             .iter()
+            .chain(shared_spans.iter())
             .any(|span| line.line >= span.start_line && line.line <= span.end_line)
         {
             continue;
         }
         let trimmed = line.text.trim();
         collect_fixture_or_helper(trimmed, line.line, &mut ir, &mut suite);
+        if let Some(ref_name) = shared_example_ref_name(trimmed) {
+            ir.shared_example_refs.push(SharedExampleRef {
+                name: ref_name.clone(),
+                span: SourceSpan::line(line.line),
+            });
+            let current_suite =
+                nearest_suite_name(&suite_nodes, line.line).unwrap_or_else(|| suite.name.clone());
+            expand_shared_example_ref(
+                path,
+                &current_suite,
+                &ref_name,
+                line.line,
+                &ir.shared_examples,
+                &mut suite,
+            );
+        }
     }
 
     for node in case_nodes {
-        let span = expanded_case_span(tree, node);
         let current_suite =
             nearest_suite_name(&suite_nodes, node.start_line).unwrap_or_else(|| suite.name.clone());
-        let first_line = tree
-            .lines
-            .iter()
-            .find(|line| line.line == node.start_line)
-            .map(|line| line.text.trim().to_owned())
-            .unwrap_or_else(|| node.text.lines().next().unwrap_or("").trim().to_owned());
-        let Some(mut case) = start_case(
-            path,
-            framework,
-            &current_suite,
-            &first_line,
-            node.start_line,
-        ) else {
-            continue;
-        };
-        case.span = span.clone();
-
-        for line in tree
-            .lines
-            .iter()
-            .filter(|line| line.line >= span.start_line && line.line <= span.end_line)
-        {
-            collect_case_line(&mut case, line.text.trim(), line.line);
+        if let Some(case) = lower_case_node(path, framework, tree, node, &current_suite) {
+            suite.cases.push(case);
         }
-
-        case.span = span;
-        suite.cases.push(case);
     }
 
     suite.span.end_line = tree.lines.last().map(|line| line.line).unwrap_or(1);
@@ -229,6 +241,93 @@ fn case_nodes(tree: &SyntaxTree) -> Vec<&SyntaxNode> {
     nodes
 }
 
+fn shared_example_nodes(tree: &SyntaxTree) -> Vec<&SyntaxNode> {
+    let mut nodes = tree
+        .nodes
+        .iter()
+        .filter(|node| is_shared_example_node(node))
+        .collect::<Vec<_>>();
+    nodes.sort_by_key(|node| (node.start_line, node.start_byte));
+    nodes.dedup_by_key(|node| node.start_byte);
+    nodes
+}
+
+fn lower_shared_example(
+    path: &Path,
+    framework: &str,
+    tree: &SyntaxTree,
+    node: &SyntaxNode,
+    all_case_nodes: &[&SyntaxNode],
+) -> Option<SharedExample> {
+    let name = extract_name(&node.text)?;
+    let span = expanded_case_span(tree, node);
+    let cases = all_case_nodes
+        .iter()
+        .filter(|case_node| {
+            case_node.start_line >= span.start_line && case_node.start_line <= span.end_line
+        })
+        .filter_map(|case_node| {
+            lower_case_node(path, framework, tree, case_node, &format!("shared:{name}"))
+        })
+        .collect::<Vec<_>>();
+
+    Some(SharedExample { name, span, cases })
+}
+
+fn lower_case_node(
+    path: &Path,
+    framework: &str,
+    tree: &SyntaxTree,
+    node: &SyntaxNode,
+    suite: &str,
+) -> Option<TestCase> {
+    let span = expanded_case_span(tree, node);
+    let first_line = tree
+        .lines
+        .iter()
+        .find(|line| line.line == node.start_line)
+        .map(|line| line.text.trim().to_owned())
+        .unwrap_or_else(|| node.text.lines().next().unwrap_or("").trim().to_owned());
+    let mut case = start_case(path, framework, suite, &first_line, node.start_line)?;
+    case.span = span.clone();
+
+    for line in tree
+        .lines
+        .iter()
+        .filter(|line| line.line >= span.start_line && line.line <= span.end_line)
+    {
+        collect_case_line(&mut case, line.text.trim(), line.line);
+    }
+
+    case.span = span;
+    Some(case)
+}
+
+fn expand_shared_example_ref(
+    path: &Path,
+    suite_name: &str,
+    ref_name: &str,
+    ref_line: usize,
+    shared_examples: &[SharedExample],
+    suite: &mut TestSuite,
+) {
+    let Some(shared) = shared_examples
+        .iter()
+        .find(|shared| shared.name == ref_name)
+    else {
+        return;
+    };
+
+    for template in &shared.cases {
+        let expanded_name = format!("{ref_name} / {}", template.name);
+        let mut case = template.clone();
+        case.id = stable_test_id(path, suite_name, &expanded_name, ref_line);
+        case.name = expanded_name;
+        case.span = SourceSpan::line(ref_line);
+        suite.cases.push(case);
+    }
+}
+
 fn is_suite_node(node: &SyntaxNode) -> bool {
     if !is_call_like(node) {
         return false;
@@ -243,6 +342,30 @@ fn is_suite_node(node: &SyntaxNode) -> bool {
             "describe(",
             "context ",
             "context(",
+        ],
+    )
+}
+
+fn is_shared_example_node(node: &SyntaxNode) -> bool {
+    if !is_call_like(node) {
+        return false;
+    }
+    let text = node.text.trim_start();
+    starts_any(
+        text,
+        &[
+            "shared_examples ",
+            "shared_examples(",
+            "RSpec.shared_examples ",
+            "RSpec.shared_examples(",
+            "shared_examples_for ",
+            "shared_examples_for(",
+            "RSpec.shared_examples_for ",
+            "RSpec.shared_examples_for(",
+            "shared_context ",
+            "shared_context(",
+            "RSpec.shared_context ",
+            "RSpec.shared_context(",
         ],
     )
 }
@@ -271,6 +394,12 @@ fn is_case_node(node: &SyntaxNode) -> bool {
             "test(",
         ],
     ) || text.starts_with("def test_")
+}
+
+fn is_inside_spans(line: usize, spans: &[SourceSpan]) -> bool {
+    spans
+        .iter()
+        .any(|span| line >= span.start_line && line <= span.end_line)
 }
 
 fn is_call_like(node: &SyntaxNode) -> bool {
@@ -342,7 +471,9 @@ fn detect_framework(content: &str) -> &'static str {
 
 fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
     let normalized = path.to_string_lossy().replace('\\', "/");
-    let Some(candidate) = normalized
+    let mut candidates = Vec::new();
+
+    if let Some(candidate) = normalized
         .strip_prefix("spec/")
         .and_then(|path| path.strip_suffix("_spec.rb"))
         .or_else(|| {
@@ -350,15 +481,37 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
                 .strip_prefix("test/")
                 .and_then(|path| path.strip_suffix("_test.rb"))
         })
-    else {
-        return Vec::new();
-    };
+    {
+        candidates.push(
+            candidate
+                .strip_prefix("test_")
+                .unwrap_or(candidate)
+                .to_owned(),
+        );
+    }
 
-    let candidate = candidate.strip_prefix("test_").unwrap_or(candidate);
-    vec![SubjectHint {
-        path: PathBuf::from(format!("lib/{candidate}.rb")),
-        confidence: Confidence::Approximate,
-    }]
+    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        && let Some(candidate) = stem
+            .strip_suffix("_spec")
+            .or_else(|| stem.strip_suffix("_test"))
+    {
+        candidates.push(
+            candidate
+                .strip_prefix("test_")
+                .unwrap_or(candidate)
+                .to_owned(),
+        );
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    candidates
+        .into_iter()
+        .map(|candidate| SubjectHint {
+            path: PathBuf::from(format!("lib/{candidate}.rb")),
+            confidence: Confidence::Approximate,
+        })
+        .collect()
 }
 
 fn collect_fixture_or_helper(
@@ -395,6 +548,23 @@ fn collect_fixture_or_helper(
             span: SourceSpan::line(line_no),
         });
     }
+}
+
+fn shared_example_ref_name(trimmed: &str) -> Option<String> {
+    if !starts_any(
+        trimmed,
+        &[
+            "it_behaves_like ",
+            "it_behaves_like(",
+            "include_examples ",
+            "include_examples(",
+            "include_context ",
+            "include_context(",
+        ],
+    ) {
+        return None;
+    }
+    extract_name(trimmed)
 }
 
 fn start_case(
@@ -853,5 +1023,33 @@ mod tests {
 
         assert!(tree.has_error);
         assert_eq!(ir.confidence, Confidence::Unresolved);
+    }
+
+    #[test]
+    fn keeps_and_expands_shared_examples() {
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(
+                br#"
+                RSpec.shared_examples "priced thing" do
+                  it "has a price" do
+                    expect(subject.price).to eq(1)
+                  end
+                end
+
+                RSpec.describe Product do
+                  it_behaves_like "priced thing"
+                end
+                "#,
+            )
+            .unwrap();
+        let ir =
+            FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/product_spec.rb")).unwrap();
+
+        assert_eq!(ir.shared_examples.len(), 1);
+        assert_eq!(ir.shared_example_refs.len(), 1);
+        assert_eq!(ir.case_count(), 1);
+        assert_eq!(ir.assertion_count(), 1);
+        assert!(ir.cases()[0].name.contains("priced thing"));
     }
 }

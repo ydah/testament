@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use testament_core::{
-    AssertionKind, Axis, EvidenceSet, FileCoverage, MetricOutcome, Provenance, TestFileIr,
+    AssertionKind, Axis, CoverageEvidence, EvidenceSet, FileCoverage, MetricOutcome, Provenance,
+    TestFileIr,
 };
 
 pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
@@ -11,17 +12,22 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
         boundary_signal(ir),
     ];
 
-    if let Some(file_coverage) = evidence
+    if let Some((file_coverage, coverage_path)) = evidence
         .coverage
         .as_ref()
-        .and_then(|coverage| coverage.file_for_path(&ir.path))
+        .and_then(|coverage| sut_coverage_for_ir(ir, coverage))
     {
         if let Some(line_rate) = file_coverage.line_coverage() {
-            outcomes.push(line_coverage(line_rate));
-            outcomes.push(checked_coverage(ir, file_coverage, line_rate));
+            outcomes.push(line_coverage(line_rate, &coverage_path));
+            outcomes.push(checked_coverage(
+                ir,
+                file_coverage,
+                line_rate,
+                &coverage_path,
+            ));
         }
         if let Some(branch_rate) = file_coverage.branch_coverage() {
-            outcomes.push(branch_coverage(branch_rate));
+            outcomes.push(branch_coverage(branch_rate, &coverage_path));
         }
     }
 
@@ -39,6 +45,21 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
     }
 
     outcomes
+}
+
+fn sut_coverage_for_ir<'a>(
+    ir: &TestFileIr,
+    coverage: &'a CoverageEvidence,
+) -> Option<(&'a FileCoverage, String)> {
+    for hint in &ir.subject_hints {
+        if let Some(file) = coverage.file_for_path(&hint.path) {
+            return Some((file, hint.path.to_string_lossy().into_owned()));
+        }
+    }
+
+    coverage
+        .file_for_path(&ir.path)
+        .map(|file| (file, ir.path_display()))
 }
 
 fn assertion_density(ir: &TestFileIr) -> MetricOutcome {
@@ -129,14 +150,18 @@ fn boundary_signal(ir: &TestFileIr) -> MetricOutcome {
     }
 }
 
-fn line_coverage(line_rate: f64) -> MetricOutcome {
+fn line_coverage(line_rate: f64, coverage_path: &str) -> MetricOutcome {
     MetricOutcome {
         id: "adequacy.line_coverage".to_owned(),
         axis: Axis::Adequacy,
         score: Some(line_rate.clamp(0.0, 1.0)),
         value: line_rate.clamp(0.0, 1.0),
         unit: "ratio".to_owned(),
-        summary: format!("{:.1}% line coverage from evidence", line_rate * 100.0),
+        summary: format!(
+            "{:.1}% line coverage from evidence for {}",
+            line_rate * 100.0,
+            coverage_path
+        ),
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A1", "A7"],
@@ -146,14 +171,18 @@ fn line_coverage(line_rate: f64) -> MetricOutcome {
     }
 }
 
-fn branch_coverage(branch_rate: f64) -> MetricOutcome {
+fn branch_coverage(branch_rate: f64, coverage_path: &str) -> MetricOutcome {
     MetricOutcome {
         id: "adequacy.branch_coverage".to_owned(),
         axis: Axis::Adequacy,
         score: Some(branch_rate.clamp(0.0, 1.0)),
         value: branch_rate.clamp(0.0, 1.0),
         unit: "ratio".to_owned(),
-        summary: format!("{:.1}% branch coverage from evidence", branch_rate * 100.0),
+        summary: format!(
+            "{:.1}% branch coverage from evidence for {}",
+            branch_rate * 100.0,
+            coverage_path
+        ),
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A1", "A7"],
@@ -163,26 +192,24 @@ fn branch_coverage(branch_rate: f64) -> MetricOutcome {
     }
 }
 
-fn checked_coverage(ir: &TestFileIr, coverage: &FileCoverage, line_rate: f64) -> MetricOutcome {
-    let assertion_lines = ir
-        .cases()
+fn checked_coverage(
+    ir: &TestFileIr,
+    coverage: &FileCoverage,
+    line_rate: f64,
+    coverage_path: &str,
+) -> MetricOutcome {
+    let cases = ir.cases();
+    let asserted_cases = cases
         .iter()
-        .flat_map(|case| {
-            case.assertions
-                .iter()
-                .map(|assertion| assertion.span.start_line)
-        })
-        .collect::<BTreeSet<_>>();
-    let checked_lines = assertion_lines
-        .iter()
-        .filter(|line| coverage.covered_lines.contains(line))
+        .filter(|case| !case.assertions.is_empty())
         .count();
-    let assertion_reach = if assertion_lines.is_empty() {
+    let assertion_reach = if cases.is_empty() {
         0.0
     } else {
-        checked_lines as f64 / assertion_lines.len() as f64
+        asserted_cases as f64 / cases.len() as f64
     };
-    let score = (line_rate * assertion_reach).clamp(0.0, 1.0);
+    let executable_reach = coverage.line_coverage().unwrap_or(line_rate);
+    let score = (executable_reach * assertion_reach).clamp(0.0, 1.0);
 
     MetricOutcome {
         id: "adequacy.checked_coverage".to_owned(),
@@ -191,14 +218,15 @@ fn checked_coverage(ir: &TestFileIr, coverage: &FileCoverage, line_rate: f64) ->
         value: score,
         unit: "ratio".to_owned(),
         summary: format!(
-            "{:.1}% checked coverage static approximation",
-            score * 100.0
+            "{:.1}% checked coverage static approximation for {}",
+            score * 100.0,
+            coverage_path
         ),
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A5"],
             "Checked coverage estimates which executed lines are reached by assertions.",
-            "This implementation approximates dynamic slicing by intersecting assertion lines with covered lines and scaling by line coverage.",
+            "This implementation approximates dynamic slicing by scaling SUT line coverage by the ratio of test cases with normalized assertions.",
         ),
     }
 }

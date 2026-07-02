@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum Axis {
     Adequacy,
     Redundancy,
@@ -17,7 +19,7 @@ impl Axis {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum Confidence {
     Exact,
     Approximate,
@@ -34,7 +36,7 @@ impl Confidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize)]
 pub enum Severity {
     Info,
     Warning,
@@ -51,7 +53,7 @@ impl Severity {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct SourceSpan {
     pub start_line: usize,
     pub end_line: usize,
@@ -66,13 +68,15 @@ impl SourceSpan {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TestFileIr {
     pub path: PathBuf,
     pub language: String,
     pub framework: String,
     pub suites: Vec<TestSuite>,
     pub shared_fixtures: Vec<Fixture>,
+    pub shared_examples: Vec<SharedExample>,
+    pub shared_example_refs: Vec<SharedExampleRef>,
     pub helpers: Vec<HelperDef>,
     pub subject_hints: Vec<SubjectHint>,
     pub confidence: Confidence,
@@ -86,6 +90,8 @@ impl TestFileIr {
             framework: framework.to_owned(),
             suites: Vec::new(),
             shared_fixtures: Vec::new(),
+            shared_examples: Vec::new(),
+            shared_example_refs: Vec::new(),
             helpers: Vec::new(),
             subject_hints: Vec::new(),
             confidence: Confidence::Approximate,
@@ -113,7 +119,7 @@ impl TestFileIr {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TestSuite {
     pub name: String,
     pub span: SourceSpan,
@@ -145,7 +151,7 @@ impl TestSuite {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TestCase {
     pub id: String,
     pub name: String,
@@ -186,14 +192,14 @@ impl TestCase {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Statement {
     pub text: String,
     pub role: StatementRole,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum StatementRole {
     Arrange,
     Act,
@@ -201,7 +207,7 @@ pub enum StatementRole {
     Unknown,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct Assertion {
     pub kind: AssertionKind,
     pub matcher: String,
@@ -211,7 +217,7 @@ pub struct Assertion {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub enum AssertionKind {
     Equality,
     Predicate,
@@ -238,20 +244,20 @@ impl AssertionKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TestDouble {
     pub kind: String,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ExternalRef {
     pub kind: ExternalRefKind,
     pub expression: String,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum ExternalRefKind {
     FileSystem,
     Network,
@@ -274,14 +280,14 @@ impl ExternalRefKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Tag {
     pub kind: TagKind,
     pub label: String,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum TagKind {
     Skipped,
     Pending,
@@ -298,39 +304,52 @@ impl TagKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Fixture {
     pub name: String,
     pub span: SourceSpan,
     pub eager: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct HelperDef {
     pub name: String,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct SubjectHint {
     pub path: PathBuf,
     pub confidence: Confidence,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct LiteralValue {
     pub raw: String,
     pub kind: LiteralKind,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum LiteralKind {
     Boundary,
     Number,
     String,
     Nil,
     Boolean,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SharedExample {
+    pub name: String,
+    pub span: SourceSpan,
+    pub cases: Vec<TestCase>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SharedExampleRef {
+    pub name: String,
+    pub span: SourceSpan,
 }
 
 pub fn stable_test_id(path: &Path, suite: &str, name: &str, line: usize) -> String {

@@ -379,8 +379,12 @@ dependencies = [
 name = "testament-metrics"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "testament-adapter-api",
  "testament-core",
+ "testament-fw-minitest",
+ "testament-fw-rspec",
+ "testament-fw-testunit",
  "testament-lang-ruby",
 ]
 

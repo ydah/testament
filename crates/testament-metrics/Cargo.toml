@@ -6,8 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 testament-adapter-api = { path = "../testament-adapter-api" }
 testament-core = { path = "../testament-core" }
+testament-fw-minitest = { path = "../testament-fw-minitest" }
+testament-fw-rspec = { path = "../testament-fw-rspec" }
+testament-fw-testunit = { path = "../testament-fw-testunit" }
 testament-lang-ruby = { path = "../testament-lang-ruby" }
 
 [lib]

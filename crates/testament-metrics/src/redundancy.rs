@@ -8,6 +8,7 @@ use testament_core::{
 pub fn compute(ir: &TestFileIr, rules: &RuleConfig, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
     let (candidate_ratio, findings) = redundancy_candidates(ir, rules, evidence);
     let structural = structural_similarity_score(ir, &findings);
+    let assertion_overlap = assertion_overlap_score(ir, &findings);
     let mut outcomes = vec![
         MetricOutcome {
             id: "redundancy.candidate_ratio".to_owned(),
@@ -27,6 +28,7 @@ pub fn compute(ir: &TestFileIr, rules: &RuleConfig, evidence: &EvidenceSet) -> V
             ),
         },
         structural,
+        assertion_overlap,
     ];
 
     if let Some(per_test) = evidence.per_test_coverage.as_ref() {
@@ -187,6 +189,30 @@ fn structural_similarity_score(ir: &TestFileIr, candidate_findings: &[Finding]) 
             &["R1"],
             "Normalized test bodies are compared with token-set Jaccard similarity.",
             "This is a clone-detection proxy, not coverage- or mutant-based subsumption.",
+        ),
+    }
+}
+
+fn assertion_overlap_score(ir: &TestFileIr, candidate_findings: &[Finding]) -> MetricOutcome {
+    let cases = ir.case_count().max(1) as f64;
+    let ratio = candidate_findings
+        .iter()
+        .filter(|finding| finding.rule_id == "redundancy.assertion_overlap")
+        .count() as f64
+        / cases;
+
+    MetricOutcome {
+        id: "redundancy.assertion_overlap".to_owned(),
+        axis: Axis::Redundancy,
+        score: Some((1.0 - ratio).clamp(0.0, 1.0)),
+        value: ratio,
+        unit: "ratio".to_owned(),
+        summary: format!("{:.1}% assertion-overlap finding ratio", ratio * 100.0),
+        findings: Vec::new(),
+        provenance: Provenance::new(
+            &["R3"],
+            "Assertion overlap reports repeated assertion subject/kind pairs as review candidates.",
+            "This is a static review signal and does not imply tests should be deleted automatically.",
         ),
     }
 }
