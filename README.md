@@ -13,9 +13,6 @@ adapters.
   coverage, and per-test mutation evidence.
 - Maintainability signals from test-smell rules.
 
-The design rationale is documented in
-[test-quality-guardrail-design.md](test-quality-guardrail-design.md).
-
 ## Requirements
 
 - Rust 1.91, managed by [rust-toolchain.toml](rust-toolchain.toml)
