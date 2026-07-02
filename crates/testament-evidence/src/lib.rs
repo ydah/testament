@@ -6,7 +6,7 @@ use serde_json::Value;
 use testament_adapter_api::{AdapterError, AdapterResult, EvidenceProvider};
 use testament_core::{
     CoverageEvidence, CoverageRequirement, EvidenceInput, EvidenceSet, EvidenceSource,
-    FileCoverage, MutationEvidence, PerTestCoverageEvidence,
+    FileCoverage, MutationEvidence, PerTestCoverageEvidence, TraceCaseEvidence, TraceEvidence,
 };
 
 pub fn load_configured_evidence(root: &Path, inputs: &[&EvidenceInput]) -> EvidenceSet {
@@ -58,6 +58,10 @@ pub fn load_evidence(format: &str, path: &Path) -> AdapterResult<EvidenceSet> {
         },
         "per-test-json" | "testament-per-test-json" => EvidenceSet {
             per_test_coverage: Some(parse_per_test_json(&content)?),
+            ..EvidenceSet::default()
+        },
+        "trace-json" | "testament-trace-json" => EvidenceSet {
+            trace: Some(parse_trace_json(&content)?),
             ..EvidenceSet::default()
         },
         other => {
@@ -365,6 +369,43 @@ fn parse_per_test_json(content: &str) -> AdapterResult<PerTestCoverageEvidence> 
     Ok(evidence)
 }
 
+fn parse_trace_json(content: &str) -> AdapterResult<TraceEvidence> {
+    let value = parse_json(content)?;
+    let mut evidence = TraceEvidence::default();
+    let cases = value
+        .get("cases")
+        .or_else(|| value.get("tests"))
+        .unwrap_or(&value);
+
+    let Some(case_map) = cases.as_object() else {
+        return Ok(evidence);
+    };
+
+    for (case_id, raw) in case_map {
+        let checked = raw
+            .get("checked")
+            .or_else(|| raw.get("checked_lines"))
+            .or_else(|| raw.get("assertion_slice"))
+            .or_else(|| raw.get("dynamic_slice"))
+            .map(parse_requirement_set)
+            .unwrap_or_default();
+        let executed = raw
+            .get("executed")
+            .or_else(|| raw.get("executed_lines"))
+            .map(parse_requirement_set)
+            .unwrap_or_default();
+        evidence.cases.insert(
+            case_id.clone(),
+            TraceCaseEvidence {
+                executed_lines: executed,
+                checked_lines: checked,
+            },
+        );
+    }
+
+    Ok(evidence)
+}
+
 fn parse_json(content: &str) -> AdapterResult<Value> {
     serde_json::from_str(content).map_err(|error| AdapterError::new(error.to_string()))
 }
@@ -385,6 +426,47 @@ fn parse_string_set_map(value: &Value) -> BTreeMap<String, BTreeSet<String>> {
         map.insert(case_id.clone(), values);
     }
     map
+}
+
+fn parse_requirement_set(value: &Value) -> BTreeSet<CoverageRequirement> {
+    let mut requirements = BTreeSet::new();
+    if let Some(files) = value.as_object() {
+        for (path, lines) in files {
+            for line in lines.as_array().into_iter().flatten() {
+                if let Some(line) = line.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                    requirements.insert(CoverageRequirement {
+                        path: normalize_json_path(path),
+                        line,
+                    });
+                }
+            }
+        }
+        return requirements;
+    }
+
+    for item in value.as_array().into_iter().flatten() {
+        if let Some(requirement) = parse_requirement_item(item) {
+            requirements.insert(requirement);
+        }
+    }
+    requirements
+}
+
+fn parse_requirement_item(value: &Value) -> Option<CoverageRequirement> {
+    if let Some(raw) = value.as_str() {
+        let (path, line) = raw.rsplit_once(':')?;
+        return line.parse::<usize>().ok().map(|line| CoverageRequirement {
+            path: normalize_json_path(path),
+            line,
+        });
+    }
+
+    let path = string_any(value, &["path", "file", "filename"])?;
+    let line = usize_value(value, &["line", "line_no", "lineno"])?;
+    Some(CoverageRequirement {
+        path: normalize_json_path(&path),
+        line,
+    })
 }
 
 fn flatten_json_numbers(value: &Value) -> Vec<i64> {
@@ -467,5 +549,38 @@ end_of_record
         .unwrap();
         assert_eq!(mutation.score(), Some(2.0 / 3.0));
         assert_eq!(mutation.per_test_kills["case-1"].len(), 2);
+    }
+
+    #[test]
+    fn parses_trace_json_checked_and_executed_lines() {
+        let trace = parse_trace_json(
+            r#"
+{
+  "cases": {
+    "Cart counts added items": {
+      "executed": {
+        "lib/cart.rb": [1, 2, 3]
+      },
+      "checked": [
+        "lib/cart.rb:1",
+        { "path": "lib/cart.rb", "line": 2 }
+      ]
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let case = trace.cases.get("Cart counts added items").unwrap();
+        assert!(case.executed_lines.contains(&CoverageRequirement {
+            path: "lib/cart.rb".to_owned(),
+            line: 3,
+        }));
+        assert_eq!(case.checked_lines.len(), 2);
+        assert!(case.checked_lines.contains(&CoverageRequirement {
+            path: "lib/cart.rb".to_owned(),
+            line: 2,
+        }));
     }
 }

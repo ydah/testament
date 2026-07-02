@@ -132,6 +132,7 @@ pub struct EvidenceConfig {
     pub coverage: Option<EvidenceInput>,
     pub mutation: Option<EvidenceInput>,
     pub per_test_coverage: Option<EvidenceInput>,
+    pub trace: Option<EvidenceInput>,
 }
 
 impl EvidenceConfig {
@@ -140,6 +141,7 @@ impl EvidenceConfig {
             coverage: raw.coverage.map(EvidenceInput::from_raw),
             mutation: raw.mutation.map(EvidenceInput::from_raw),
             per_test_coverage: raw.per_test_coverage.map(EvidenceInput::from_raw),
+            trace: raw.trace.map(EvidenceInput::from_raw),
         }
     }
 
@@ -148,6 +150,7 @@ impl EvidenceConfig {
             self.coverage.as_ref(),
             self.mutation.as_ref(),
             self.per_test_coverage.as_ref(),
+            self.trace.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -309,6 +312,7 @@ struct RawEvidence {
     coverage: Option<RawEvidenceInput>,
     mutation: Option<RawEvidenceInput>,
     per_test_coverage: Option<RawEvidenceInput>,
+    trace: Option<RawEvidenceInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +355,7 @@ mod tests {
             [evidence]
             coverage = { format = "simplecov-json", path = "coverage/.resultset.json" }
             mutation = { format = "mutant-json", path = "tmp/mutant/report.json" }
+            trace = { format = "trace-json", path = ".testament/trace.json" }
 
             [gates]
             "maintainability.smell_score" = { min = 0.90 }
@@ -370,6 +375,15 @@ mod tests {
                 .map(|input| input.format.as_str()),
             Some("simplecov-json")
         );
+        assert_eq!(
+            config
+                .evidence
+                .trace
+                .as_ref()
+                .map(|input| input.path.as_str()),
+            Some(".testament/trace.json")
+        );
+        assert_eq!(config.evidence.inputs().len(), 3);
         assert_eq!(config.rules.eager_test_max_sut_calls, 4);
         assert_eq!(config.gates.len(), 3);
         assert_eq!(

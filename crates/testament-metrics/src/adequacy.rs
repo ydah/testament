@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use testament_core::{
     AssertionKind, Axis, CoverageEvidence, EvidenceSet, FileCoverage, MetricOutcome, Provenance,
-    TestFileIr,
+    TestFileIr, TraceEvidence, normalize_path, resolve_test_case_id,
 };
 
 pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
@@ -24,6 +25,7 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
                 file_coverage,
                 line_rate,
                 &coverage_path,
+                evidence.trace.as_ref(),
             ));
         }
         if let Some(branch_rate) = file_coverage.branch_coverage() {
@@ -197,7 +199,12 @@ fn checked_coverage(
     coverage: &FileCoverage,
     line_rate: f64,
     coverage_path: &str,
+    trace: Option<&TraceEvidence>,
 ) -> MetricOutcome {
+    if let Some(outcome) = dynamic_checked_coverage(ir, coverage, coverage_path, trace) {
+        return outcome;
+    }
+
     let cases = ir.cases();
     let asserted_cases = cases
         .iter()
@@ -229,6 +236,115 @@ fn checked_coverage(
             "This implementation approximates dynamic slicing by scaling SUT line coverage by the ratio of test cases with normalized assertions.",
         ),
     }
+}
+
+fn dynamic_checked_coverage(
+    ir: &TestFileIr,
+    coverage: &FileCoverage,
+    coverage_path: &str,
+    trace: Option<&TraceEvidence>,
+) -> Option<MetricOutcome> {
+    let trace = trace?;
+    let trace_lines = dynamic_lines_for_ir(trace, ir, coverage_path);
+    if trace_lines.checked.is_empty() {
+        return None;
+    }
+
+    let denominator = checked_denominator(&trace_lines.executed, coverage);
+    if denominator.is_empty() {
+        return None;
+    }
+
+    let checked = trace_lines.checked.intersection(&denominator).count();
+    let score = (checked as f64 / denominator.len() as f64).clamp(0.0, 1.0);
+
+    Some(MetricOutcome {
+        id: "adequacy.checked_coverage".to_owned(),
+        axis: Axis::Adequacy,
+        score: Some(score),
+        value: score,
+        unit: "ratio".to_owned(),
+        summary: format!(
+            "{:.1}% checked coverage from dynamic trace for {} ({} checked line(s) / {} executed line(s))",
+            score * 100.0,
+            coverage_path,
+            checked,
+            denominator.len()
+        ),
+        findings: Vec::new(),
+        provenance: Provenance::new(
+            &["A5"],
+            "Checked coverage estimates which executed SUT lines are reached by assertions.",
+            "Uses dynamic assertion-dependency trace evidence when available; falls back to the static approximation without trace evidence.",
+        ),
+    })
+}
+
+#[derive(Default)]
+struct DynamicTraceLines {
+    executed: BTreeSet<usize>,
+    checked: BTreeSet<usize>,
+}
+
+fn dynamic_lines_for_ir(
+    trace: &TraceEvidence,
+    ir: &TestFileIr,
+    coverage_path: &str,
+) -> DynamicTraceLines {
+    let cases = ir.cases();
+    let mut lines = DynamicTraceLines::default();
+    for (case_key, case_trace) in &trace.cases {
+        if resolve_test_case_id(cases.as_slice(), case_key).is_none() {
+            continue;
+        }
+        lines.executed.extend(
+            case_trace
+                .executed_lines
+                .iter()
+                .filter(|requirement| same_path(&requirement.path, coverage_path))
+                .map(|requirement| requirement.line),
+        );
+        lines.checked.extend(
+            case_trace
+                .checked_lines
+                .iter()
+                .filter(|requirement| same_path(&requirement.path, coverage_path))
+                .map(|requirement| requirement.line),
+        );
+    }
+    lines
+}
+
+fn checked_denominator(
+    executed_lines: &BTreeSet<usize>,
+    coverage: &FileCoverage,
+) -> BTreeSet<usize> {
+    if !executed_lines.is_empty() {
+        return restrict_to_executable_lines(executed_lines, coverage);
+    }
+    if !coverage.covered_lines.is_empty() {
+        return coverage.covered_lines.clone();
+    }
+    coverage.executable_lines.clone()
+}
+
+fn restrict_to_executable_lines(
+    lines: &BTreeSet<usize>,
+    coverage: &FileCoverage,
+) -> BTreeSet<usize> {
+    if coverage.executable_lines.is_empty() {
+        return lines.clone();
+    }
+    lines
+        .intersection(&coverage.executable_lines)
+        .copied()
+        .collect()
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let left = normalize_path(Path::new(left));
+    let right = normalize_path(Path::new(right));
+    left == right || left.ends_with(&right) || right.ends_with(&left)
 }
 
 fn mutation_score(

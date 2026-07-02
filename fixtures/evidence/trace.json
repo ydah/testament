@@ -1,0 +1,12 @@
+{
+  "cases": {
+    "Cart counts added items": {
+      "executed": {
+        "lib/sample.rb": [2, 3, 4, 5]
+      },
+      "checked": {
+        "lib/sample.rb": [2, 3]
+      }
+    }
+  }
+}

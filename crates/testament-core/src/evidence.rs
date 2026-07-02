@@ -6,13 +6,17 @@ pub struct EvidenceSet {
     pub coverage: Option<CoverageEvidence>,
     pub mutation: Option<MutationEvidence>,
     pub per_test_coverage: Option<PerTestCoverageEvidence>,
+    pub trace: Option<TraceEvidence>,
     pub sources: Vec<EvidenceSource>,
     pub warnings: Vec<String>,
 }
 
 impl EvidenceSet {
     pub fn is_empty(&self) -> bool {
-        self.coverage.is_none() && self.mutation.is_none() && self.per_test_coverage.is_none()
+        self.coverage.is_none()
+            && self.mutation.is_none()
+            && self.per_test_coverage.is_none()
+            && self.trace.is_none()
     }
 
     pub fn merge(&mut self, other: EvidenceSet) {
@@ -24,6 +28,9 @@ impl EvidenceSet {
         }
         if other.per_test_coverage.is_some() {
             self.per_test_coverage = other.per_test_coverage;
+        }
+        if other.trace.is_some() {
+            self.trace = other.trace;
         }
         self.sources.extend(other.sources);
         self.warnings.extend(other.warnings);
@@ -83,6 +90,17 @@ impl FileCoverage {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PerTestCoverageEvidence {
     pub cases: BTreeMap<String, BTreeSet<CoverageRequirement>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TraceEvidence {
+    pub cases: BTreeMap<String, TraceCaseEvidence>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TraceCaseEvidence {
+    pub executed_lines: BTreeSet<CoverageRequirement>,
+    pub checked_lines: BTreeSet<CoverageRequirement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]

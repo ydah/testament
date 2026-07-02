@@ -194,6 +194,49 @@ impl TestCase {
     }
 }
 
+pub fn resolve_test_case_id(cases: &[&TestCase], raw_key: &str) -> Option<String> {
+    for case in cases {
+        if case.id == raw_key || case.evidence_aliases.iter().any(|alias| alias == raw_key) {
+            return Some(case.id.clone());
+        }
+    }
+
+    let normalized_key = normalize_evidence_key(raw_key);
+    for case in cases {
+        if case
+            .evidence_aliases
+            .iter()
+            .any(|alias| normalize_evidence_key(alias) == normalized_key)
+        {
+            return Some(case.id.clone());
+        }
+    }
+
+    let matches = cases
+        .iter()
+        .filter(|case| {
+            case.evidence_aliases.iter().any(|alias| {
+                let normalized_alias = normalize_evidence_key(alias);
+                !normalized_alias.is_empty()
+                    && (normalized_key.ends_with(&normalized_alias)
+                        || normalized_key.contains(&normalized_alias))
+            })
+        })
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Some(matches[0].id.clone());
+    }
+    None
+}
+
+fn normalize_evidence_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Statement {
     pub text: String,

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use testament_core::{
     Axis, CoverageRequirement, EvidenceSet, Finding, MetricOutcome, Provenance, RuleConfig,
-    Severity, SourceSpan, TestCase, TestFileIr,
+    Severity, SourceSpan, TestCase, TestFileIr, resolve_test_case_id,
 };
 
 pub fn compute(ir: &TestFileIr, rules: &RuleConfig, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
@@ -325,7 +325,7 @@ fn resolve_string_sets(
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut mapped = BTreeMap::<String, BTreeSet<String>>::new();
     for (raw_key, values) in raw {
-        let Some(case_id) = resolve_case_id(cases, raw_key) else {
+        let Some(case_id) = resolve_test_case_id(cases, raw_key) else {
             continue;
         };
         mapped
@@ -334,49 +334,6 @@ fn resolve_string_sets(
             .extend(values.iter().cloned());
     }
     mapped
-}
-
-fn resolve_case_id(cases: &[&TestCase], raw_key: &str) -> Option<String> {
-    for case in cases {
-        if case.id == raw_key || case.evidence_aliases.iter().any(|alias| alias == raw_key) {
-            return Some(case.id.clone());
-        }
-    }
-
-    let normalized_key = normalize_evidence_key(raw_key);
-    for case in cases {
-        if case
-            .evidence_aliases
-            .iter()
-            .any(|alias| normalize_evidence_key(alias) == normalized_key)
-        {
-            return Some(case.id.clone());
-        }
-    }
-
-    let matches = cases
-        .iter()
-        .filter(|case| {
-            case.evidence_aliases.iter().any(|alias| {
-                let normalized_alias = normalize_evidence_key(alias);
-                !normalized_alias.is_empty()
-                    && (normalized_key.ends_with(&normalized_alias)
-                        || normalized_key.contains(&normalized_alias))
-            })
-        })
-        .collect::<Vec<_>>();
-    if matches.len() == 1 {
-        return Some(matches[0].id.clone());
-    }
-    None
-}
-
-fn normalize_evidence_key(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 fn requirement_key(requirement: &CoverageRequirement) -> String {

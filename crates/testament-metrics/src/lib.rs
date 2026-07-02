@@ -145,6 +145,33 @@ end
     );
     let evidence = EvidenceSet {
         coverage: Some(coverage),
+        trace: Some(testament_core::TraceEvidence {
+            cases: [(
+                "Example works".to_owned(),
+                testament_core::TraceCaseEvidence {
+                    executed_lines: [
+                        testament_core::CoverageRequirement {
+                            path: "lib/example.rb".to_owned(),
+                            line: 1,
+                        },
+                        testament_core::CoverageRequirement {
+                            path: "lib/example.rb".to_owned(),
+                            line: 2,
+                        },
+                    ]
+                    .into_iter()
+                    .collect(),
+                    checked_lines: [testament_core::CoverageRequirement {
+                        path: "lib/example.rb".to_owned(),
+                        line: 1,
+                    }]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }),
         mutation: Some(testament_core::MutationEvidence {
             total: 4,
             killed: 3,
@@ -289,6 +316,88 @@ mod tests {
         assert_eq!(report.metric_value("adequacy.line_coverage"), Some(0.8));
         assert_eq!(report.metric_value("adequacy.branch_coverage"), Some(0.6));
         assert_eq!(report.metric_value("adequacy.mutation_score"), Some(0.7));
+    }
+
+    #[test]
+    fn uses_dynamic_trace_for_checked_coverage() {
+        let mut coverage = CoverageEvidence::default();
+        coverage.files.insert(
+            "lib/user.rb".to_owned(),
+            FileCoverage {
+                line_rate: Some(1.0),
+                branch_rate: None,
+                covered_lines: [1, 2, 3, 4].into_iter().collect(),
+                executable_lines: [1, 2, 3, 4].into_iter().collect(),
+            },
+        );
+        let evidence = EvidenceSet {
+            coverage: Some(coverage),
+            trace: Some(testament_core::TraceEvidence {
+                cases: [(
+                    "User works".to_owned(),
+                    testament_core::TraceCaseEvidence {
+                        executed_lines: [
+                            CoverageRequirement {
+                                path: "lib/user.rb".to_owned(),
+                                line: 1,
+                            },
+                            CoverageRequirement {
+                                path: "lib/user.rb".to_owned(),
+                                line: 2,
+                            },
+                            CoverageRequirement {
+                                path: "lib/user.rb".to_owned(),
+                                line: 3,
+                            },
+                        ]
+                        .into_iter()
+                        .collect(),
+                        checked_lines: [
+                            CoverageRequirement {
+                                path: "lib/user.rb".to_owned(),
+                                line: 1,
+                            },
+                            CoverageRequirement {
+                                path: "lib/user.rb".to_owned(),
+                                line: 2,
+                            },
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }),
+            ..EvidenceSet::default()
+        };
+
+        let report = analyze_content_with_evidence(
+            Path::new("spec/user_spec.rb"),
+            r#"
+            RSpec.describe User do
+              it "works" do
+                expect(user.valid?).to eq(true)
+              end
+            end
+            "#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(
+            report.metric_value("adequacy.checked_coverage"),
+            Some(2.0 / 3.0)
+        );
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.id == "adequacy.checked_coverage")
+                .unwrap()
+                .summary
+                .contains("dynamic trace")
+        );
     }
 
     #[test]

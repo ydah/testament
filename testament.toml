@@ -6,6 +6,7 @@ test_globs = ["spec/**/*_spec.rb", "test/**/*_test.rb", "test/**/test_*.rb"]
 # coverage = { format = "simplecov-json", path = "coverage/.resultset.json" }
 # mutation = { format = "mutant-json", path = "tmp/mutant/report.json" }
 # per_test_coverage = { format = "per-test-json", path = ".testament/per-test-coverage.json" }
+# trace = { format = "trace-json", path = ".testament/trace.json" }
 
 [gates]
 "adequacy.mutation_score" = { min = 0.70, when = "evidence-available" }
