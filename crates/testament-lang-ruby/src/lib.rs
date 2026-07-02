@@ -324,6 +324,7 @@ fn expand_shared_example_ref(
         case.id = stable_test_id(path, suite_name, &expanded_name, ref_line);
         case.name = expanded_name;
         case.span = SourceSpan::line(ref_line);
+        case.evidence_aliases = evidence_aliases(&case.id, suite_name, &case.name);
         suite.cases.push(case);
     }
 }
@@ -607,6 +608,7 @@ fn start_case(
     });
     let id = stable_test_id(path, suite, &name, line_no);
     let mut case = TestCase::new(id, name, SourceSpan::line(line_no));
+    case.evidence_aliases = evidence_aliases(&case.id, suite, &case.name);
 
     if skipped {
         case.tags.push(Tag {
@@ -631,6 +633,19 @@ fn start_case(
     }
 
     Some(case)
+}
+
+fn evidence_aliases(id: &str, suite: &str, name: &str) -> Vec<String> {
+    let mut aliases = vec![
+        id.to_owned(),
+        name.to_owned(),
+        format!("{suite} {name}"),
+        format!("{suite}::{name}"),
+        format!("{suite}#{name}"),
+    ];
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 fn collect_case_line(case: &mut TestCase, trimmed: &str, line_no: usize) {

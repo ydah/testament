@@ -58,10 +58,11 @@ fn redundancy_candidates(
     let mut findings = Vec::new();
 
     if let Some(mutation) = evidence.mutation.as_ref() {
+        let mapped_kills = resolve_string_sets(cases.as_slice(), &mutation.per_test_kills);
         add_set_subsumption_findings(
             "redundancy.mutant_subsumption",
             cases.as_slice(),
-            &mutation.per_test_kills,
+            &mapped_kills,
             &mut candidate_ids,
             &mut findings,
             "test case kills no unique mutants compared with another case",
@@ -69,19 +70,7 @@ fn redundancy_candidates(
     }
 
     if let Some(per_test) = evidence.per_test_coverage.as_ref() {
-        let mapped = per_test
-            .cases
-            .iter()
-            .map(|(case_id, lines)| {
-                (
-                    case_id.clone(),
-                    lines
-                        .iter()
-                        .map(requirement_key)
-                        .collect::<BTreeSet<String>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        let mapped = resolve_coverage_sets(cases.as_slice(), &per_test.cases);
         add_set_subsumption_findings(
             "redundancy.coverage_subsumption",
             cases.as_slice(),
@@ -221,21 +210,13 @@ fn coverage_subsumption_score(
     ir: &TestFileIr,
     cases: &BTreeMap<String, BTreeSet<CoverageRequirement>>,
 ) -> MetricOutcome {
-    let represented = greedy_representatives(
-        &cases
-            .iter()
-            .map(|(case_id, values)| {
-                (
-                    case_id.clone(),
-                    values.iter().map(requirement_key).collect::<BTreeSet<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
-    );
+    let ir_cases = ir.cases();
+    let mapped = resolve_coverage_sets(ir_cases.as_slice(), cases);
+    let represented = greedy_representatives(&mapped);
     representative_metric(
         "redundancy.coverage_subsumption",
         ir,
-        cases.len(),
+        mapped.len(),
         represented.len(),
         &["R1", "R2", "R5"],
         "Greedy set cover selects representative tests for per-test coverage requirements.",
@@ -246,11 +227,13 @@ fn mutant_subsumption_score(
     ir: &TestFileIr,
     cases: &BTreeMap<String, BTreeSet<String>>,
 ) -> MetricOutcome {
-    let represented = greedy_representatives(cases);
+    let ir_cases = ir.cases();
+    let mapped = resolve_string_sets(ir_cases.as_slice(), cases);
+    let represented = greedy_representatives(&mapped);
     representative_metric(
         "redundancy.mutant_subsumption",
         ir,
-        cases.len(),
+        mapped.len(),
         represented.len(),
         &["R4"],
         "Per-test mutant kill sets select representative tests with mutant-based redundancy.",
@@ -265,8 +248,8 @@ fn representative_metric(
     references: &[&str],
     definition: &str,
 ) -> MetricOutcome {
-    let total_cases = ir.case_count().max(known_cases).max(1);
-    let redundant = total_cases.saturating_sub(representatives);
+    let total_cases = ir.case_count().max(1);
+    let redundant = known_cases.saturating_sub(representatives);
     let ratio = redundant as f64 / total_cases as f64;
     MetricOutcome {
         id: id.to_owned(),
@@ -315,6 +298,85 @@ fn greedy_representatives(sets: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet
     }
 
     representatives
+}
+
+fn resolve_coverage_sets(
+    cases: &[&TestCase],
+    raw: &BTreeMap<String, BTreeSet<CoverageRequirement>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let string_sets = raw
+        .iter()
+        .map(|(case_key, requirements)| {
+            (
+                case_key.clone(),
+                requirements
+                    .iter()
+                    .map(requirement_key)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    resolve_string_sets(cases, &string_sets)
+}
+
+fn resolve_string_sets(
+    cases: &[&TestCase],
+    raw: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut mapped = BTreeMap::<String, BTreeSet<String>>::new();
+    for (raw_key, values) in raw {
+        let Some(case_id) = resolve_case_id(cases, raw_key) else {
+            continue;
+        };
+        mapped
+            .entry(case_id)
+            .or_default()
+            .extend(values.iter().cloned());
+    }
+    mapped
+}
+
+fn resolve_case_id(cases: &[&TestCase], raw_key: &str) -> Option<String> {
+    for case in cases {
+        if case.id == raw_key || case.evidence_aliases.iter().any(|alias| alias == raw_key) {
+            return Some(case.id.clone());
+        }
+    }
+
+    let normalized_key = normalize_evidence_key(raw_key);
+    for case in cases {
+        if case
+            .evidence_aliases
+            .iter()
+            .any(|alias| normalize_evidence_key(alias) == normalized_key)
+        {
+            return Some(case.id.clone());
+        }
+    }
+
+    let matches = cases
+        .iter()
+        .filter(|case| {
+            case.evidence_aliases.iter().any(|alias| {
+                let normalized_alias = normalize_evidence_key(alias);
+                !normalized_alias.is_empty()
+                    && (normalized_key.ends_with(&normalized_alias)
+                        || normalized_key.contains(&normalized_alias))
+            })
+        })
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Some(matches[0].id.clone());
+    }
+    None
+}
+
+fn normalize_evidence_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn requirement_key(requirement: &CoverageRequirement) -> String {

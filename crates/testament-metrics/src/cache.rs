@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use testament_core::TestFileIr;
 
-const CACHE_VERSION: &str = "ir-v2";
+const CACHE_VERSION: &str = "ir-v3";
 
 pub fn read_ir(path: &Path, content: &str) -> Option<TestFileIr> {
     let cache_path = cache_path(path, content);

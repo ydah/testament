@@ -223,7 +223,7 @@ fn lower_file_content(path: &Path, content: &str) -> TestFileIr {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use testament_core::{
         CoverageEvidence, CoverageRequirement, EvidenceSet, FileCoverage, MutationEvidence,
         PerTestCoverageEvidence,
@@ -293,21 +293,9 @@ mod tests {
 
     #[test]
     fn computes_per_test_coverage_redundancy() {
-        let first_case = testament_core::stable_test_id(
-            &PathBuf::from("spec/cart_spec.rb"),
-            "Cart",
-            "counts one item",
-            3,
-        );
-        let second_case = testament_core::stable_test_id(
-            &PathBuf::from("spec/cart_spec.rb"),
-            "Cart",
-            "counts another item",
-            8,
-        );
         let mut cases = BTreeMap::new();
         cases.insert(
-            first_case,
+            "Cart counts one item".to_owned(),
             [
                 CoverageRequirement {
                     path: "lib/cart.rb".to_owned(),
@@ -322,7 +310,7 @@ mod tests {
             .collect::<BTreeSet<_>>(),
         );
         cases.insert(
-            second_case,
+            "Cart counts another item".to_owned(),
             [CoverageRequirement {
                 path: "lib/cart.rb".to_owned(),
                 line: 1,
@@ -333,6 +321,23 @@ mod tests {
 
         let evidence = EvidenceSet {
             per_test_coverage: Some(PerTestCoverageEvidence { cases }),
+            mutation: Some(MutationEvidence {
+                total: 2,
+                killed: 2,
+                equivalent_marked: 0,
+                per_test_kills: [
+                    (
+                        "Cart counts one item".to_owned(),
+                        ["m1".to_owned(), "m2".to_owned()].into_iter().collect(),
+                    ),
+                    (
+                        "Cart counts another item".to_owned(),
+                        ["m1".to_owned()].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            }),
             ..EvidenceSet::default()
         };
         let report = analyze_content_with_evidence(
@@ -357,6 +362,145 @@ mod tests {
                 .metric_value("redundancy.coverage_subsumption")
                 .unwrap()
                 > 0.0
+        );
+    }
+
+    #[test]
+    fn maps_probe_case_names_to_ir_case_ids() {
+        let mut cases = BTreeMap::new();
+        cases.insert(
+            "Cart counts one item".to_owned(),
+            [
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 1,
+                },
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 2,
+                },
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+        cases.insert(
+            "Cart counts another item".to_owned(),
+            [CoverageRequirement {
+                path: "lib/cart.rb".to_owned(),
+                line: 1,
+            }]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+
+        let evidence = EvidenceSet {
+            per_test_coverage: Some(PerTestCoverageEvidence { cases }),
+            mutation: Some(MutationEvidence {
+                total: 2,
+                killed: 2,
+                equivalent_marked: 0,
+                per_test_kills: [
+                    (
+                        "Cart counts one item".to_owned(),
+                        ["m1".to_owned(), "m2".to_owned()].into_iter().collect(),
+                    ),
+                    (
+                        "Cart counts another item".to_owned(),
+                        ["m1".to_owned()].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+            ..EvidenceSet::default()
+        };
+        let report = analyze_content_with_evidence(
+            Path::new("spec/cart_spec.rb"),
+            r#"
+            RSpec.describe Cart do
+              it "counts one item" do
+                expect(cart.count).to eq(1)
+              end
+
+              it "counts another item" do
+                expect(cart.count).to eq(1)
+              end
+            end
+            "#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(
+            report.metric_value("redundancy.coverage_subsumption"),
+            Some(0.5)
+        );
+        assert_eq!(
+            report.metric_value("redundancy.mutant_subsumption"),
+            Some(0.5)
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "redundancy.mutant_subsumption")
+        );
+    }
+
+    #[test]
+    fn maps_probe_method_names_to_ir_case_ids() {
+        let mut cases = BTreeMap::new();
+        cases.insert(
+            "CartTest#test_counts_one_item".to_owned(),
+            [
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 1,
+                },
+                CoverageRequirement {
+                    path: "lib/cart.rb".to_owned(),
+                    line: 2,
+                },
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+        cases.insert(
+            "CartTest#test_counts_another_item".to_owned(),
+            [CoverageRequirement {
+                path: "lib/cart.rb".to_owned(),
+                line: 1,
+            }]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        );
+
+        let evidence = EvidenceSet {
+            per_test_coverage: Some(PerTestCoverageEvidence { cases }),
+            ..EvidenceSet::default()
+        };
+        let report = analyze_content_with_evidence(
+            Path::new("test/cart_test.rb"),
+            r#"
+            require "minitest/autorun"
+
+            class CartTest < Minitest::Test
+              def test_counts_one_item
+                assert_equal 1, cart.count
+              end
+
+              def test_counts_another_item
+                assert_equal 1, cart.count
+              end
+            end
+            "#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(
+            report.metric_value("redundancy.coverage_subsumption"),
+            Some(0.5)
         );
     }
 

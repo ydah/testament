@@ -154,6 +154,7 @@ impl TestSuite {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TestCase {
     pub id: String,
+    pub evidence_aliases: Vec<String>,
     pub name: String,
     pub span: SourceSpan,
     pub statements: Vec<Statement>,
@@ -172,6 +173,7 @@ impl TestCase {
     pub fn new(id: impl Into<String>, name: impl Into<String>, span: SourceSpan) -> Self {
         Self {
             id: id.into(),
+            evidence_aliases: Vec::new(),
             name: name.into(),
             span,
             statements: Vec::new(),

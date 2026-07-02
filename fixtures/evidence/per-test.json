@@ -1,8 +1,7 @@
 {
   "cases": {
-    "fixture-case": {
+    "Cart counts added items": {
       "lib/cart.rb": [1, 2, 3]
     }
   }
 }
-
