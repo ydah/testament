@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 testament-adapter-api = { path = "../testament-adapter-api" }
 testament-core = { path = "../testament-core" }
-tree-sitter = "0.24.7"
+tree-sitter = "0.26.10"
 tree-sitter-ruby = "0.23.1"
 
 [lib]
