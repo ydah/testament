@@ -15,6 +15,7 @@ use testament_report::{ReportFormat, render, render_json, render_tty};
 
 #[derive(Parser, Debug)]
 #[command(name = "testament")]
+#[command(version)]
 #[command(about = "Research-informed test quality guardrails")]
 struct Cli {
     #[arg(long, global = true, default_value = ".")]

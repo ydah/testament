@@ -18,6 +18,14 @@ adapters.
 - Rust 1.91, managed by [rust-toolchain.toml](rust-toolchain.toml)
 - Ruby 3.1 or newer for the Ruby probe syntax/runtime checks
 
+## Usage
+
+```sh
+testament check
+testament report --format json spec/user_spec.rb
+testament explain adequacy.assertion_density
+```
+
 ## Development
 
 ```sh
