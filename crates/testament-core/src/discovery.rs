@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use globset::GlobBuilder;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ pub fn matches_any_ignore(path: &Path, patterns: &[String]) -> bool {
         .any(|pattern| matches_pattern(&normalized, &normalize_pattern(pattern)))
 }
 
+pub fn matches_test_pattern(path: &Path, pattern: &str) -> bool {
+    matches_pattern(&normalize(path), &normalize_pattern(pattern))
+}
+
 fn visit(
     root: &Path,
     current: &Path,
@@ -29,6 +34,10 @@ fn visit(
 
     for entry in fs::read_dir(current)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap_or(&path);
 
@@ -36,7 +45,7 @@ fn visit(
             continue;
         }
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
@@ -65,37 +74,11 @@ fn visit(
 }
 
 fn matches_pattern(path: &str, pattern: &str) -> bool {
-    if pattern == path {
-        return true;
-    }
-
-    if let Some(suffix) = pattern.strip_prefix("**/*") {
-        return path.ends_with(suffix);
-    }
-
-    if let Some((prefix, suffix)) = pattern.split_once("/**/*") {
-        return in_dir(path, prefix) && path.ends_with(suffix);
-    }
-
-    if let Some((prefix, suffix)) = pattern.split_once("/**/") {
-        let file_name = path.rsplit('/').next().unwrap_or(path);
-        if let Some((file_prefix, file_suffix)) = suffix.split_once('*') {
-            return in_dir(path, prefix)
-                && file_name.starts_with(file_prefix)
-                && file_name.ends_with(file_suffix);
-        }
-        return in_dir(path, prefix) && file_name == suffix;
-    }
-
-    if let Some((prefix, suffix)) = pattern.split_once('*') {
-        return path.starts_with(prefix) && path.ends_with(suffix);
-    }
-
-    false
-}
-
-fn in_dir(path: &str, prefix: &str) -> bool {
-    path == prefix || path.starts_with(&format!("{prefix}/"))
+    GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .backslash_escape(false)
+        .build()
+        .is_ok_and(|glob| glob.compile_matcher().is_match(path))
 }
 
 fn normalize(path: &Path) -> String {
@@ -125,5 +108,11 @@ mod tests {
             "test/**/test_*.rb"
         ));
         assert!(!matches_pattern("lib/user.rb", "spec/**/*_spec.rb"));
+        assert!(matches_pattern("spec/user_spec.rb", "spec/**/*_spec.rb"));
+        assert!(matches_pattern("spec/user_spec.rb", "spec/*_spec.rb"));
+        assert!(!matches_pattern(
+            "spec/models/user_spec.rb",
+            "spec/*_spec.rb"
+        ));
     }
 }

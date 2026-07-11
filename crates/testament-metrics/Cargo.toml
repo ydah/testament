@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 serde_json.workspace = true
+sha2 = "0.10.9"
 testament-adapter-api = { path = "../testament-adapter-api" }
 testament-core = { path = "../testament-core" }
 testament-fw-minitest = { path = "../testament-fw-minitest" }

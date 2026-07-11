@@ -20,20 +20,54 @@ impl EvidenceSet {
     }
 
     pub fn merge(&mut self, other: EvidenceSet) {
-        if other.coverage.is_some() {
-            self.coverage = other.coverage;
+        if let Some(other_coverage) = other.coverage {
+            self.coverage
+                .get_or_insert_with(CoverageEvidence::default)
+                .files
+                .extend(other_coverage.files);
         }
-        if other.mutation.is_some() {
-            self.mutation = other.mutation;
+        if let Some(other_mutation) = other.mutation {
+            merge_mutation(
+                self.mutation.get_or_insert_with(MutationEvidence::default),
+                other_mutation,
+            );
         }
-        if other.per_test_coverage.is_some() {
-            self.per_test_coverage = other.per_test_coverage;
+        if let Some(other_coverage) = other.per_test_coverage {
+            let coverage = self
+                .per_test_coverage
+                .get_or_insert_with(PerTestCoverageEvidence::default);
+            for (case, requirements) in other_coverage.cases {
+                coverage.cases.entry(case).or_default().extend(requirements);
+            }
         }
-        if other.trace.is_some() {
-            self.trace = other.trace;
+        if let Some(other_trace) = other.trace {
+            let trace = self.trace.get_or_insert_with(TraceEvidence::default);
+            for (case, evidence) in other_trace.cases {
+                let current = trace.cases.entry(case).or_default();
+                current.executed_lines.extend(evidence.executed_lines);
+                current.checked_lines.extend(evidence.checked_lines);
+            }
         }
         self.sources.extend(other.sources);
         self.warnings.extend(other.warnings);
+    }
+}
+
+fn merge_mutation(current: &mut MutationEvidence, other: MutationEvidence) {
+    current.total += other.total;
+    current.killed += other.killed;
+    current.equivalent_marked += other.equivalent_marked;
+    if current.total == 0 {
+        current.score_override = other.score_override.or(current.score_override);
+    } else {
+        current.score_override = None;
+    }
+    for (case, mutants) in other.per_test_kills {
+        current
+            .per_test_kills
+            .entry(case)
+            .or_default()
+            .extend(mutants);
     }
 }
 
@@ -57,7 +91,9 @@ impl CoverageEvidence {
             .or_else(|| {
                 self.files
                     .iter()
-                    .find(|(candidate, _)| normalized.ends_with(candidate.as_str()))
+                    .find(|(candidate, _)| {
+                        Path::new(&normalized).ends_with(Path::new(candidate.as_str()))
+                    })
                     .map(|(_, coverage)| coverage)
             })
     }
@@ -114,11 +150,15 @@ pub struct MutationEvidence {
     pub total: usize,
     pub killed: usize,
     pub equivalent_marked: usize,
+    pub score_override: Option<f64>,
     pub per_test_kills: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl MutationEvidence {
     pub fn score(&self) -> Option<f64> {
+        if let Some(score) = self.score_override {
+            return Some(score);
+        }
         let denominator = self.total.saturating_sub(self.equivalent_marked);
         if denominator == 0 {
             return None;
@@ -129,4 +169,46 @@ impl MutationEvidence {
 
 pub fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coverage_path_suffixes_match_by_component() {
+        let mut evidence = CoverageEvidence::default();
+        evidence
+            .files
+            .insert("lib/cart.rb".to_owned(), FileCoverage::default());
+
+        assert!(
+            evidence
+                .file_for_path(Path::new("/work/lib/cart.rb"))
+                .is_some()
+        );
+        assert!(
+            evidence
+                .file_for_path(Path::new("/work/lib/shopping_cart.rb"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn merging_evidence_preserves_inputs_of_the_same_kind() {
+        let mut left = EvidenceSet {
+            coverage: Some(CoverageEvidence {
+                files: BTreeMap::from([("lib/a.rb".to_owned(), FileCoverage::default())]),
+            }),
+            ..EvidenceSet::default()
+        };
+        left.merge(EvidenceSet {
+            coverage: Some(CoverageEvidence {
+                files: BTreeMap::from([("lib/b.rb".to_owned(), FileCoverage::default())]),
+            }),
+            ..EvidenceSet::default()
+        });
+
+        assert_eq!(left.coverage.unwrap().files.len(), 2);
+    }
 }

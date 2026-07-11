@@ -9,7 +9,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
 
 use testament_core::{
@@ -70,7 +69,7 @@ pub fn analyze_ir_with_evidence(
         .flat_map(|outcome| outcome.findings.iter().cloned())
         .collect::<Vec<_>>();
     let axis_scores = compute_axis_scores(&outcomes);
-    let score = aggregate_score(&axis_scores);
+    let score = aggregate_score(&axis_scores, ir.confidence);
 
     FileReport {
         ir,
@@ -100,16 +99,21 @@ pub fn analyze_paths_with_evidence(
             .collect();
     }
 
-    let config = Arc::new(config.clone());
-    let evidence = Arc::new(evidence.clone());
+    let worker_count = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
     thread::scope(|scope| {
         let handles = paths
-            .iter()
-            .cloned()
-            .map(|path| {
-                let config = Arc::clone(&config);
-                let evidence = Arc::clone(&evidence);
-                scope.spawn(move || analyze_file_with_cache(&path, &config, &evidence))
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|path| analyze_file_with_cache(path, config, evidence))
+                        .collect::<io::Result<Vec<_>>>()
+                })
             })
             .collect::<Vec<_>>();
         handles
@@ -119,7 +123,8 @@ pub fn analyze_paths_with_evidence(
                     .join()
                     .map_err(|_| io::Error::other("analysis worker panicked"))?
             })
-            .collect()
+            .collect::<io::Result<Vec<_>>>()
+            .map(|chunks| chunks.into_iter().flatten().collect())
     })
 }
 
@@ -176,6 +181,7 @@ end
             total: 4,
             killed: 3,
             equivalent_marked: 0,
+            score_override: None,
             per_test_kills: [(
                 "catalog-case".to_owned(),
                 ["m1".to_owned()].into_iter().collect(),
@@ -199,7 +205,15 @@ end
         ..EvidenceSet::default()
     };
 
-    analyze_content_with_evidence(path, content, config, &evidence).outcomes
+    let mut outcomes = analyze_content_with_evidence(path, content, config, &evidence).outcomes;
+    let mut static_evidence = evidence.clone();
+    static_evidence.trace = None;
+    for outcome in analyze_content_with_evidence(path, content, config, &static_evidence).outcomes {
+        if outcomes.iter().all(|existing| existing.id != outcome.id) {
+            outcomes.push(outcome);
+        }
+    }
+    outcomes
 }
 
 pub fn evaluate_project(
@@ -207,10 +221,21 @@ pub fn evaluate_project(
     config: &AppConfig,
 ) -> testament_core::ProjectReport {
     let gate_eval = evaluate_gates(config, &files);
+    let warnings = files
+        .iter()
+        .filter(|file| file.ir.confidence == testament_core::Confidence::Unresolved)
+        .map(|file| {
+            format!(
+                "{} could not be parsed exactly; aggregate score forced to 0",
+                file.ir.path_display()
+            )
+        })
+        .collect();
     testament_core::ProjectReport {
         files,
         passed: gate_eval.passed,
         gates: gate_eval.violations,
+        warnings,
     }
 }
 
@@ -224,10 +249,16 @@ fn compute_axis_scores(outcomes: &[MetricOutcome]) -> BTreeMap<String, f64> {
     axis_scores
 }
 
-fn aggregate_score(axis_scores: &BTreeMap<String, f64>) -> f64 {
-    let adequacy = axis_scores.get("adequacy").copied().unwrap_or(1.0);
-    let redundancy = axis_scores.get("redundancy").copied().unwrap_or(1.0);
-    let maintainability = axis_scores.get("maintainability").copied().unwrap_or(1.0);
+fn aggregate_score(
+    axis_scores: &BTreeMap<String, f64>,
+    confidence: testament_core::Confidence,
+) -> f64 {
+    if confidence == testament_core::Confidence::Unresolved {
+        return 0.0;
+    }
+    let adequacy = axis_scores.get("adequacy").copied().unwrap_or(0.0);
+    let redundancy = axis_scores.get("redundancy").copied().unwrap_or(0.0);
+    let maintainability = axis_scores.get("maintainability").copied().unwrap_or(0.0);
     ((adequacy * 0.40) + (redundancy * 0.20) + (maintainability * 0.40)).clamp(0.0, 1.0)
 }
 
@@ -240,8 +271,10 @@ fn analyze_file_with_cache(
 }
 
 fn lower_file_content(path: &Path, content: &str) -> TestFileIr {
-    let ir = cache::read_ir(path, content)
-        .unwrap_or_else(|| AdapterRegistry::builtin().lower(path, content));
+    if let Some(ir) = cache::read_ir(path, content) {
+        return ir;
+    }
+    let ir = AdapterRegistry::builtin().lower(path, content);
     cache::write_ir(path, content, &ir);
     ir
 }
@@ -295,6 +328,7 @@ mod tests {
                 total: 10,
                 killed: 7,
                 equivalent_marked: 0,
+                score_override: None,
                 per_test_kills: BTreeMap::new(),
             }),
             ..EvidenceSet::default()
@@ -316,6 +350,12 @@ mod tests {
         assert_eq!(report.metric_value("adequacy.line_coverage"), Some(0.8));
         assert_eq!(report.metric_value("adequacy.branch_coverage"), Some(0.6));
         assert_eq!(report.metric_value("adequacy.mutation_score"), Some(0.7));
+        assert!(
+            report
+                .metric_value("adequacy.checked_coverage_static")
+                .is_some()
+        );
+        assert_eq!(report.metric_value("adequacy.checked_coverage"), None);
     }
 
     #[test]
@@ -434,6 +474,7 @@ mod tests {
                 total: 2,
                 killed: 2,
                 equivalent_marked: 0,
+                score_override: None,
                 per_test_kills: [
                     (
                         "Cart counts one item".to_owned(),
@@ -508,6 +549,7 @@ mod tests {
                 total: 2,
                 killed: 2,
                 equivalent_marked: 0,
+                score_override: None,
                 per_test_kills: [
                     (
                         "Cart counts one item".to_owned(),
@@ -621,9 +663,102 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert!(ids.contains("adequacy.checked_coverage"));
+        assert!(ids.contains("adequacy.checked_coverage_static"));
         assert!(ids.contains("adequacy.mutation_score"));
         assert!(ids.contains("redundancy.coverage_subsumption"));
         assert!(ids.contains("redundancy.mutant_subsumption"));
         assert!(ids.contains("redundancy.assertion_overlap"));
+    }
+
+    #[test]
+    fn asserting_helpers_prevent_unknown_test_findings() {
+        let report = analyze_content(
+            Path::new("spec/order_spec.rb"),
+            r#"
+            RSpec.describe Order do
+              def expect_valid_order(order)
+                expect(order).to be_valid
+              end
+              it("works") { expect_valid_order(subject) }
+            end
+            "#,
+            &AppConfig::default(),
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != "smell.unknown_test")
+        );
+    }
+
+    #[test]
+    fn configured_assertion_methods_prevent_unknown_test_findings() {
+        let config = AppConfig::try_parse(
+            r#"
+            [rules."smell.unknown_test"]
+            extra_assertion_methods = ["verify_order"]
+            "#,
+        )
+        .unwrap();
+        let report = analyze_content(
+            Path::new("spec/order_spec.rb"),
+            r#"RSpec.describe(Order) { it("works") { verify_order(subject) } }"#,
+            &config,
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != "smell.unknown_test")
+        );
+    }
+
+    #[test]
+    fn smell_penalties_are_capped_per_rule() {
+        let config = AppConfig::try_parse(
+            r#"
+            [rules."maintainability.smell_score"]
+            max_findings_per_rule = 1
+
+            [rules."smell.assertion_roulette"]
+            max_assertions = 100
+            "#,
+        )
+        .unwrap();
+        let report = analyze_content(
+            Path::new("spec/order_spec.rb"),
+            r#"
+            RSpec.describe Order do
+              it "checks values" do
+                expect(a).to eq(10)
+                expect(b).to eq(20)
+                expect(c).to eq(30)
+              end
+            end
+            "#,
+            &config,
+        );
+
+        assert_eq!(
+            report.metric_score("maintainability.smell_score"),
+            Some(0.95)
+        );
+    }
+
+    #[test]
+    fn unresolved_files_score_zero_and_emit_a_project_warning() {
+        let file = analyze_content(
+            Path::new("spec/broken_spec.rb"),
+            "RSpec.describe Order do\n  it 'never closes'\n",
+            &AppConfig::default(),
+        );
+        assert_eq!(file.ir.confidence, testament_core::Confidence::Unresolved);
+        assert_eq!(file.score, 0.0);
+
+        let project = evaluate_project(vec![file], &AppConfig::default());
+        assert_eq!(project.warnings.len(), 1);
     }
 }

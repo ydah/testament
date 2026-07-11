@@ -26,10 +26,6 @@ impl AppConfig {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
     }
 
-    pub fn parse(input: &str) -> Self {
-        Self::try_parse(input).expect("invalid testament TOML")
-    }
-
     pub fn try_parse(input: &str) -> Result<Self, toml::de::Error> {
         toml::from_str::<RawConfig>(input).map(Self::from_raw)
     }
@@ -55,10 +51,16 @@ impl AppConfig {
                     max: raw_gate.max,
                     level: raw_gate
                         .level
-                        .as_deref()
-                        .map(GateLevel::parse)
+                        .map(GateLevel::from)
                         .unwrap_or(GateLevel::Error),
                     when_evidence_available: raw_gate.when.as_deref() == Some("evidence-available"),
+                    target: raw_gate.target.map(GateTarget::from).unwrap_or_else(|| {
+                        if raw_gate.min.is_none() && raw_gate.max.is_some() {
+                            GateTarget::Value
+                        } else {
+                            GateTarget::Score
+                        }
+                    }),
                 };
                 config
                     .gates
@@ -75,6 +77,9 @@ impl AppConfig {
             }
             if let Some(tolerance) = ratchet.tolerance {
                 config.ratchet.tolerance = tolerance;
+            }
+            if let Some(rename_tracking) = ratchet.rename_tracking {
+                config.ratchet.rename_tracking = rename_tracking;
             }
         }
         if let Some(paths) = raw.ignore.and_then(|ignore| ignore.paths) {
@@ -104,6 +109,7 @@ impl Default for AppConfig {
                     max: None,
                     level: GateLevel::Error,
                     when_evidence_available: false,
+                    target: GateTarget::Score,
                 },
                 GateConfig {
                     metric_id: "maintainability.smell_score".to_owned(),
@@ -111,6 +117,7 @@ impl Default for AppConfig {
                     max: None,
                     level: GateLevel::Error,
                     when_evidence_available: false,
+                    target: GateTarget::Score,
                 },
                 GateConfig {
                     metric_id: "redundancy.candidate_ratio".to_owned(),
@@ -118,6 +125,7 @@ impl Default for AppConfig {
                     max: Some(0.15),
                     level: GateLevel::Warn,
                     when_evidence_available: false,
+                    target: GateTarget::Value,
                 },
             ],
             ratchet: RatchetConfig::default(),
@@ -180,6 +188,13 @@ pub struct GateConfig {
     pub max: Option<f64>,
     pub level: GateLevel,
     pub when_evidence_available: bool,
+    pub target: GateTarget,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GateTarget {
+    Score,
+    Value,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,11 +204,11 @@ pub enum GateLevel {
 }
 
 impl GateLevel {
-    pub fn parse(value: &str) -> Self {
-        if value.eq_ignore_ascii_case("warn") || value.eq_ignore_ascii_case("warning") {
-            Self::Warn
-        } else {
-            Self::Error
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "error" => Some(Self::Error),
+            "warn" | "warning" => Some(Self::Warn),
+            _ => None,
         }
     }
 
@@ -210,6 +225,7 @@ pub struct RatchetConfig {
     pub enabled: bool,
     pub baseline: String,
     pub tolerance: f64,
+    pub rename_tracking: bool,
 }
 
 impl Default for RatchetConfig {
@@ -218,6 +234,7 @@ impl Default for RatchetConfig {
             enabled: false,
             baseline: ".testament/baseline.json".to_owned(),
             tolerance: 0.0,
+            rename_tracking: true,
         }
     }
 }
@@ -229,6 +246,8 @@ pub struct RuleConfig {
     pub structural_similarity_threshold: f64,
     pub mock_overuse_ratio: f64,
     pub magic_number_allowlist: Vec<String>,
+    pub extra_assertion_methods: Vec<String>,
+    pub smell_penalty_cap_per_rule: usize,
 }
 
 impl RuleConfig {
@@ -274,6 +293,22 @@ impl RuleConfig {
                         .collect();
                 }
             }
+            ("smell.unknown_test", "extra_assertion_methods") => {
+                if let Some(values) = value.as_array() {
+                    self.extra_assertion_methods = values
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect();
+                }
+            }
+            ("maintainability.smell_score", "max_findings_per_rule") => {
+                self.smell_penalty_cap_per_rule = value
+                    .as_integer()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(self.smell_penalty_cap_per_rule)
+                    .max(1);
+            }
             _ => {}
         }
     }
@@ -287,6 +322,8 @@ impl Default for RuleConfig {
             structural_similarity_threshold: 0.88,
             mock_overuse_ratio: 2.0,
             magic_number_allowlist: vec!["0".to_owned(), "1".to_owned(), "-1".to_owned()],
+            extra_assertion_methods: Vec::new(),
+            smell_penalty_cap_per_rule: 3,
         }
     }
 }
@@ -325,8 +362,42 @@ struct RawEvidenceInput {
 struct RawGate {
     min: Option<f64>,
     max: Option<f64>,
-    level: Option<String>,
+    level: Option<RawGateLevel>,
     when: Option<String>,
+    target: Option<RawGateTarget>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RawGateLevel {
+    Error,
+    #[serde(alias = "warning")]
+    Warn,
+}
+
+impl From<RawGateLevel> for GateLevel {
+    fn from(value: RawGateLevel) -> Self {
+        match value {
+            RawGateLevel::Error => Self::Error,
+            RawGateLevel::Warn => Self::Warn,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RawGateTarget {
+    Score,
+    Value,
+}
+
+impl From<RawGateTarget> for GateTarget {
+    fn from(value: RawGateTarget) -> Self {
+        match value {
+            RawGateTarget::Score => Self::Score,
+            RawGateTarget::Value => Self::Value,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,6 +405,7 @@ struct RawRatchet {
     enabled: Option<bool>,
     baseline: Option<String>,
     tolerance: Option<f64>,
+    rename_tracking: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -347,7 +419,7 @@ mod tests {
 
     #[test]
     fn parses_project_gates_evidence_and_rule_overrides() {
-        let config = AppConfig::parse(
+        let config = AppConfig::try_parse(
             r#"
             [project]
             test_globs = ["spec/**/*_spec.rb"]
@@ -364,7 +436,8 @@ mod tests {
             [rules."smell.eager_test"]
             max_sut_calls = 4
             "#,
-        );
+        )
+        .unwrap();
 
         assert_eq!(config.test_globs, vec!["spec/**/*_spec.rb"]);
         assert_eq!(
@@ -394,5 +467,35 @@ mod tests {
                 .and_then(|gate| gate.min),
             Some(0.90)
         );
+        assert_eq!(
+            config
+                .gates
+                .iter()
+                .find(|gate| gate.metric_id == "redundancy.candidate_ratio")
+                .map(|gate| gate.target),
+            Some(GateTarget::Value)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_gate_levels() {
+        assert!(
+            AppConfig::try_parse(
+                r#"[gates]
+                "adequacy.assertion_density" = { min = 0.5, level = "warm" }"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_ratchet_rename_tracking_opt_out() {
+        let config = AppConfig::try_parse(
+            r#"[ratchet]
+            rename_tracking = false"#,
+        )
+        .unwrap();
+
+        assert!(!config.ratchet.rename_tracking);
     }
 }

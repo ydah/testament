@@ -4,14 +4,14 @@ use std::process::{self, Command};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use testament_core::{
-    AppConfig, GateLevel, ProjectReport, discover_test_files, evaluate_ratchet,
-    parse_baseline_scores,
+    AppConfig, GateLevel, ProjectReport, discover_test_files, evaluate_ratchet_with_metrics,
+    parse_baseline_files,
 };
 use testament_evidence::load_configured_evidence;
 use testament_metrics::{
     analyze_content_with_evidence, analyze_paths_with_evidence, evaluate_project, metric_catalog,
 };
-use testament_report::{ReportFormat, render, render_json, render_tty};
+use testament_report::{ReportFormat, render, render_baseline, render_tty};
 
 #[derive(Parser, Debug)]
 #[command(name = "testament")]
@@ -20,8 +20,10 @@ use testament_report::{ReportFormat, render, render_json, render_tty};
 struct Cli {
     #[arg(long, global = true, default_value = ".")]
     root: PathBuf,
-    #[arg(short, long, global = true, default_value = "testament.toml")]
-    config: PathBuf,
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
+    #[arg(long, global = true)]
+    no_rename_tracking: bool,
     #[command(subcommand)]
     command: Option<CommandArgs>,
 }
@@ -30,7 +32,7 @@ struct Cli {
 enum CommandArgs {
     Check(AnalyzeArgs),
     Report(AnalyzeArgs),
-    Baseline(AnalyzeArgs),
+    Baseline(BaselineArgs),
     Explain(ExplainArgs),
     Diff(DiffArgs),
 }
@@ -43,7 +45,14 @@ struct AnalyzeArgs {
 }
 
 #[derive(clap::Args, Debug)]
+struct BaselineArgs {
+    paths: Vec<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
 struct ExplainArgs {
+    #[arg(long)]
+    file: bool,
     target: String,
 }
 
@@ -89,6 +98,16 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<i32, String> {
+    let config_path = cli
+        .config
+        .as_deref()
+        .unwrap_or_else(|| Path::new("testament.toml"));
+    if cli.config.is_some() && !resolve_path(&cli.root, config_path).exists() {
+        return Err(format!(
+            "configured file does not exist: {}",
+            resolve_path(&cli.root, config_path).display()
+        ));
+    }
     let Some(command) = cli.command else {
         Cli::command()
             .print_help()
@@ -98,17 +117,22 @@ fn run(cli: Cli) -> Result<i32, String> {
     };
 
     match command {
-        CommandArgs::Check(args) => check(&cli.root, &cli.config, args),
-        CommandArgs::Report(args) => report(&cli.root, &cli.config, args),
-        CommandArgs::Baseline(args) => baseline(&cli.root, &cli.config, args),
-        CommandArgs::Explain(args) => explain(&cli.root, &cli.config, args),
-        CommandArgs::Diff(args) => diff(&cli.root, &cli.config, args),
+        CommandArgs::Check(args) => check(&cli.root, config_path, args, cli.no_rename_tracking),
+        CommandArgs::Report(args) => report(&cli.root, config_path, args),
+        CommandArgs::Baseline(args) => baseline(&cli.root, config_path, args),
+        CommandArgs::Explain(args) => explain(&cli.root, config_path, args),
+        CommandArgs::Diff(args) => diff(&cli.root, config_path, args, cli.no_rename_tracking),
     }
 }
 
-fn check(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, String> {
+fn check(
+    root: &Path,
+    config_path: &Path,
+    args: AnalyzeArgs,
+    no_rename_tracking: bool,
+) -> Result<i32, String> {
     let (config, mut project) = analyze_project(root, config_path, &args.paths)?;
-    apply_ratchet(root, &config, &mut project)?;
+    apply_ratchet(root, &config, &mut project, no_rename_tracking)?;
     println!("{}", render(&project, args.format.into()));
     Ok(if project.passed { 0 } else { 1 })
 }
@@ -119,13 +143,13 @@ fn report(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, Str
     Ok(0)
 }
 
-fn baseline(root: &Path, config_path: &Path, args: AnalyzeArgs) -> Result<i32, String> {
+fn baseline(root: &Path, config_path: &Path, args: BaselineArgs) -> Result<i32, String> {
     let (config, project) = analyze_project(root, config_path, &args.paths)?;
     let baseline = resolve_path(root, Path::new(&config.ratchet.baseline));
     if let Some(parent) = baseline.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    fs::write(&baseline, render_json(&project)).map_err(|error| error.to_string())?;
+    fs::write(&baseline, render_baseline(&project)).map_err(|error| error.to_string())?;
     println!("wrote {}", baseline.display());
     Ok(0)
 }
@@ -135,13 +159,23 @@ fn explain(root: &Path, config_path: &Path, args: ExplainArgs) -> Result<i32, St
         AppConfig::load(&resolve_path(root, config_path)).map_err(|error| error.to_string())?;
     let path = resolve_path(root, Path::new(&args.target));
 
-    if path.exists() || args.target.ends_with(".rb") {
+    if args.file {
         let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
         let evidence = load_configured_evidence(root, &config.evidence.inputs());
-        let file = analyze_content_with_evidence(&path, &content, &config, &evidence);
+        print_evidence_warnings(&evidence);
+        let mut file = analyze_content_with_evidence(&path, &content, &config, &evidence);
+        relativize_file_path(root, &mut file);
+        let mut warnings = evidence.warnings.clone();
+        if file.ir.confidence == testament_core::Confidence::Unresolved {
+            warnings.push(format!(
+                "{} could not be parsed exactly; aggregate score forced to 0",
+                file.ir.path_display()
+            ));
+        }
         let project = ProjectReport {
             files: vec![file],
             gates: Vec::new(),
+            warnings,
             passed: true,
         };
         println!("{}", render_tty(&project));
@@ -151,15 +185,25 @@ fn explain(root: &Path, config_path: &Path, args: ExplainArgs) -> Result<i32, St
     explain_metric(&args.target, &config)
 }
 
-fn diff(root: &Path, config_path: &Path, args: DiffArgs) -> Result<i32, String> {
+fn diff(
+    root: &Path,
+    config_path: &Path,
+    args: DiffArgs,
+    no_rename_tracking: bool,
+) -> Result<i32, String> {
     let config =
         AppConfig::load(&resolve_path(root, config_path)).map_err(|error| error.to_string())?;
     let paths = changed_test_files(root, &args.base, &config)?;
     let evidence = load_configured_evidence(root, &config.evidence.inputs());
-    let files = analyze_paths_with_evidence(&paths, &config, &evidence)
+    print_evidence_warnings(&evidence);
+    let mut files = analyze_paths_with_evidence(&paths, &config, &evidence)
         .map_err(|error| error.to_string())?;
+    for file in &mut files {
+        relativize_file_path(root, file);
+    }
     let mut project = evaluate_project(files, &config);
-    apply_ratchet(root, &config, &mut project)?;
+    project.warnings.extend(evidence.warnings.clone());
+    apply_ratchet(root, &config, &mut project, no_rename_tracking)?;
     println!("{}", render(&project, args.format.into()));
     Ok(if project.passed { 0 } else { 1 })
 }
@@ -180,15 +224,34 @@ fn analyze_project(
             .collect()
     };
     let evidence = load_configured_evidence(root, &config.evidence.inputs());
-    let files = analyze_paths_with_evidence(&paths, &config, &evidence)
+    print_evidence_warnings(&evidence);
+    let mut files = analyze_paths_with_evidence(&paths, &config, &evidence)
         .map_err(|error| error.to_string())?;
-    Ok((config.clone(), evaluate_project(files, &config)))
+    for file in &mut files {
+        relativize_file_path(root, file);
+    }
+    let mut project = evaluate_project(files, &config);
+    project.warnings.extend(evidence.warnings.clone());
+    Ok((config.clone(), project))
+}
+
+fn relativize_file_path(root: &Path, file: &mut testament_core::FileReport) {
+    if let Ok(relative) = file.ir.path.strip_prefix(root) {
+        file.ir.path = relative.to_path_buf();
+    }
+}
+
+fn print_evidence_warnings(evidence: &testament_core::EvidenceSet) {
+    for warning in &evidence.warnings {
+        eprintln!("warning: {warning}");
+    }
 }
 
 fn apply_ratchet(
     root: &Path,
     config: &AppConfig,
     project: &mut ProjectReport,
+    no_rename_tracking: bool,
 ) -> Result<(), String> {
     if !config.ratchet.enabled {
         return Ok(());
@@ -200,10 +263,15 @@ fn apply_ratchet(
     }
 
     let content = fs::read_to_string(baseline).map_err(|error| error.to_string())?;
-    let scores = parse_baseline_scores(&content);
-    let mut ratchet_violations =
-        evaluate_ratchet(&scores, config.ratchet.tolerance, &project.files);
-    project.gates.append(&mut ratchet_violations);
+    let baseline_files = parse_baseline_files(&content);
+    let mut evaluation = evaluate_ratchet_with_metrics(
+        &baseline_files,
+        config.ratchet.tolerance,
+        &project.files,
+        config.ratchet.rename_tracking && !no_rename_tracking,
+    );
+    project.gates.append(&mut evaluation.violations);
+    project.warnings.append(&mut evaluation.warnings);
     project.passed = project
         .gates
         .iter()
@@ -214,7 +282,14 @@ fn apply_ratchet(
 fn explain_metric(metric_id: &str, config: &AppConfig) -> Result<i32, String> {
     let catalog = metric_catalog(config);
     let Some(outcome) = catalog.iter().find(|outcome| outcome.id == metric_id) else {
-        return Err(format!("unknown metric `{metric_id}`"));
+        let available = catalog
+            .iter()
+            .map(|outcome| outcome.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "unknown metric `{metric_id}`; available metrics: {available}"
+        ));
     };
 
     println!("{}", outcome.id);
@@ -245,29 +320,13 @@ fn changed_test_files(root: &Path, base: &str, config: &AppConfig) -> Result<Vec
         .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("rb"))
         .filter(|path| {
             let normalized = path.to_string_lossy().replace('\\', "/");
-            config
-                .test_globs
-                .iter()
-                .any(|pattern| simple_glob_match(&normalized, pattern))
+            config.test_globs.iter().any(|pattern| {
+                testament_core::matches_test_pattern(Path::new(&normalized), pattern)
+            })
         })
         .map(|path| resolve_path(root, &path))
         .collect();
     Ok(paths)
-}
-
-fn simple_glob_match(path: &str, pattern: &str) -> bool {
-    if let Some((prefix, suffix)) = pattern.split_once("/**/*") {
-        return path.starts_with(prefix) && path.ends_with(suffix);
-    }
-    if let Some((prefix, suffix)) = pattern.split_once("/**/") {
-        let file_name = path.rsplit('/').next().unwrap_or(path);
-        if let Some((file_prefix, file_suffix)) = suffix.split_once('*') {
-            return path.starts_with(prefix)
-                && file_name.starts_with(file_prefix)
-                && file_name.ends_with(file_suffix);
-        }
-    }
-    path == pattern
 }
 
 fn resolve_path(root: &Path, path: &Path) -> PathBuf {
@@ -301,11 +360,35 @@ mod tests {
             "spec/a_spec.rb",
         ]);
 
-        assert_eq!(cli.config, PathBuf::from("custom.toml"));
+        assert_eq!(cli.config, Some(PathBuf::from("custom.toml")));
+        assert!(!cli.no_rename_tracking);
         let CommandArgs::Report(args) = cli.command.unwrap() else {
             panic!("expected report command");
         };
         assert_eq!(args.format, OutputFormat::Json);
         assert_eq!(args.paths, vec![PathBuf::from("spec/a_spec.rb")]);
+    }
+
+    #[test]
+    fn explicit_missing_config_is_an_error() {
+        let cli = Cli::parse_from([
+            "testament",
+            "--config",
+            "definitely-missing-testament.toml",
+            "report",
+        ]);
+
+        assert!(run(cli).unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn baseline_does_not_accept_ignored_format_option() {
+        assert!(Cli::try_parse_from(["testament", "baseline", "--format", "sarif"]).is_err());
+    }
+
+    #[test]
+    fn parses_rename_tracking_opt_out() {
+        let cli = Cli::parse_from(["testament", "check", "--no-rename-tracking"]);
+        assert!(cli.no_rename_tracking);
     }
 }

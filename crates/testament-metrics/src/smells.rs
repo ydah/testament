@@ -1,23 +1,19 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use testament_core::{
-    Assertion, Axis, ExternalRefKind, Finding, MetricOutcome, Provenance, RuleConfig, Severity,
-    SourceSpan, TagKind, TestCase, TestFileIr,
+    Assertion, Axis, ExternalRefKind, Finding, HelperDef, MetricOutcome, Provenance, RuleConfig,
+    Severity, SourceSpan, TagKind, TestCase, TestFileIr,
 };
 
 pub fn compute(ir: &TestFileIr, rules: &RuleConfig) -> MetricOutcome {
     let mut findings = Vec::new();
     for case in ir.cases() {
-        findings.extend(case_smells(case, rules));
+        findings.extend(case_smells(case, &ir.helpers, rules));
     }
     findings.extend(file_smells(ir));
 
     let case_count = ir.case_count().max(1) as f64;
-    let penalty = findings
-        .iter()
-        .map(|finding| severity_penalty(finding.severity))
-        .sum::<f64>()
-        / case_count;
+    let penalty = capped_penalty(&findings, rules.smell_penalty_cap_per_rule) / case_count;
     let score = (1.0 - penalty).clamp(0.0, 1.0);
 
     MetricOutcome {
@@ -36,9 +32,9 @@ pub fn compute(ir: &TestFileIr, rules: &RuleConfig) -> MetricOutcome {
     }
 }
 
-fn case_smells(case: &TestCase, rules: &RuleConfig) -> Vec<Finding> {
+fn case_smells(case: &TestCase, helpers: &[HelperDef], rules: &RuleConfig) -> Vec<Finding> {
     let mut findings = Vec::new();
-    detect_unknown_test(case, &mut findings);
+    detect_unknown_test(case, helpers, rules, &mut findings);
     detect_assertion_roulette(case, rules, &mut findings);
     detect_eager_test(case, rules, &mut findings);
     detect_external_ref_smells(case, &mut findings);
@@ -51,8 +47,26 @@ fn case_smells(case: &TestCase, rules: &RuleConfig) -> Vec<Finding> {
     findings
 }
 
-fn detect_unknown_test(case: &TestCase, findings: &mut Vec<Finding>) {
+fn detect_unknown_test(
+    case: &TestCase,
+    helpers: &[HelperDef],
+    rules: &RuleConfig,
+    findings: &mut Vec<Finding>,
+) {
+    let calls_configured_assertion = case.calls.iter().any(|call| {
+        rules
+            .extra_assertion_methods
+            .iter()
+            .any(|method| method == &call.method)
+    });
+    let calls_asserting_helper = case.calls.iter().any(|call| {
+        helpers
+            .iter()
+            .any(|helper| helper.contains_assertion && helper.name == call.method)
+    });
     if case.assertions.is_empty()
+        && !calls_configured_assertion
+        && !calls_asserting_helper
         && !case.has_tag(TagKind::Skipped)
         && !case.has_tag(TagKind::Pending)
     {
@@ -309,4 +323,25 @@ fn severity_penalty(severity: Severity) -> f64 {
         Severity::Warning => 0.15,
         Severity::Error => 0.35,
     }
+}
+
+fn capped_penalty(findings: &[Finding], max_per_rule: usize) -> f64 {
+    let mut by_rule = BTreeMap::<&str, Vec<Severity>>::new();
+    for finding in findings {
+        by_rule
+            .entry(&finding.rule_id)
+            .or_default()
+            .push(finding.severity);
+    }
+    by_rule
+        .values_mut()
+        .map(|severities| {
+            severities.sort_by(|left, right| right.cmp(left));
+            severities
+                .iter()
+                .take(max_per_rule)
+                .map(|severity| severity_penalty(*severity))
+                .sum::<f64>()
+        })
+        .sum()
 }

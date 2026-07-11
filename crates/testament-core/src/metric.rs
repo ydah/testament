@@ -126,6 +126,7 @@ impl FileReport {
 pub struct ProjectReport {
     pub files: Vec<FileReport>,
     pub gates: Vec<crate::gate::GateViolation>,
+    pub warnings: Vec<String>,
     pub passed: bool,
 }
 
@@ -134,6 +135,7 @@ impl ProjectReport {
         Self {
             files: Vec::new(),
             gates: Vec::new(),
+            warnings: Vec::new(),
             passed: true,
         }
     }

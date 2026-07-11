@@ -43,6 +43,7 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
             mutation.killed,
             mutation.total,
             mutation.equivalent_marked,
+            mutation.score_override.is_some(),
         ));
     }
 
@@ -91,6 +92,9 @@ fn assertion_density(ir: &TestFileIr) -> MetricOutcome {
 }
 
 fn assertion_diversity(ir: &TestFileIr) -> MetricOutcome {
+    // Five distinct oracle styles are treated as broad coverage; the IR has
+    // additional framework-specific categories that are not expected in every suite.
+    const SATURATING_ASSERTION_KIND_COUNT: f64 = 5.0;
     let mut kinds = BTreeSet::<AssertionKind>::new();
     for case in ir.cases() {
         for assertion in &case.assertions {
@@ -101,7 +105,7 @@ fn assertion_diversity(ir: &TestFileIr) -> MetricOutcome {
     let score = if kinds.is_empty() {
         0.0
     } else {
-        (kinds.len() as f64 / 5.0).min(1.0)
+        (kinds.len() as f64 / SATURATING_ASSERTION_KIND_COUNT).min(1.0)
     };
 
     MetricOutcome {
@@ -219,7 +223,7 @@ fn checked_coverage(
     let score = (executable_reach * assertion_reach).clamp(0.0, 1.0);
 
     MetricOutcome {
-        id: "adequacy.checked_coverage".to_owned(),
+        id: "adequacy.checked_coverage_static".to_owned(),
         axis: Axis::Adequacy,
         score: Some(score),
         value: score,
@@ -232,8 +236,8 @@ fn checked_coverage(
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A5"],
-            "Checked coverage estimates which executed lines are reached by assertions.",
-            "This implementation approximates dynamic slicing by scaling SUT line coverage by the ratio of test cases with normalized assertions.",
+            "Static checked coverage approximates which covered lines may be reached by assertions.",
+            "This separate static metric scales SUT line coverage by the ratio of test cases with normalized assertions; it is not used as dynamic trace evidence.",
         ),
     }
 }
@@ -275,7 +279,7 @@ fn dynamic_checked_coverage(
         provenance: Provenance::new(
             &["A5"],
             "Checked coverage estimates which executed SUT lines are reached by assertions.",
-            "Uses dynamic assertion-dependency trace evidence when available; falls back to the static approximation without trace evidence.",
+            "Uses dynamic assertion-dependency trace evidence; the static approximation is reported under adequacy.checked_coverage_static.",
         ),
     })
 }
@@ -344,7 +348,9 @@ fn restrict_to_executable_lines(
 fn same_path(left: &str, right: &str) -> bool {
     let left = normalize_path(Path::new(left));
     let right = normalize_path(Path::new(right));
-    left == right || left.ends_with(&right) || right.ends_with(&left)
+    left == right
+        || Path::new(&left).ends_with(Path::new(&right))
+        || Path::new(&right).ends_with(Path::new(&left))
 }
 
 fn mutation_score(
@@ -352,6 +358,7 @@ fn mutation_score(
     killed: usize,
     total: usize,
     equivalent_marked: usize,
+    from_summary: bool,
 ) -> MetricOutcome {
     MetricOutcome {
         id: "adequacy.mutation_score".to_owned(),
@@ -359,14 +366,29 @@ fn mutation_score(
         score: Some(score.clamp(0.0, 1.0)),
         value: score.clamp(0.0, 1.0),
         unit: "ratio".to_owned(),
-        summary: format!(
-            "{killed} killed mutants out of {total} total ({equivalent_marked} equivalent marked)"
-        ),
+        summary: if from_summary {
+            format!("mutation score {score:.3} from report summary")
+        } else {
+            format!(
+                "{killed} killed mutants out of {total} total ({equivalent_marked} equivalent marked)"
+            )
+        },
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A2", "A3", "A4"],
             "Mutation score is killed / (total - equivalent_marked).",
             "The tool consumes external mutation reports rather than running a mutation engine.",
         ),
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::same_path;
+
+    #[test]
+    fn suffix_matching_respects_path_components() {
+        assert!(same_path("/work/lib/cart.rb", "lib/cart.rb"));
+        assert!(!same_path("lib/shopping_cart.rb", "cart.rb"));
     }
 }

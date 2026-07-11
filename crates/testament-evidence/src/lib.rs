@@ -53,7 +53,7 @@ pub fn load_evidence(format: &str, path: &Path) -> AdapterResult<EvidenceSet> {
             ..EvidenceSet::default()
         },
         "stryker-json" => EvidenceSet {
-            mutation: Some(parse_mutation_json(&content)?),
+            mutation: Some(parse_stryker_json(&content)?),
             ..EvidenceSet::default()
         },
         "per-test-json" | "testament-per-test-json" => EvidenceSet {
@@ -165,13 +165,29 @@ fn parse_simplecov_file(file: &Value) -> FileCoverage {
 fn branch_rate_from_simplecov(value: &Value) -> Option<f64> {
     let mut covered = 0_usize;
     let mut total = 0_usize;
-    for branch in flatten_json_numbers(value) {
-        total += 1;
-        if branch > 0 {
-            covered += 1;
-        }
-    }
+    collect_simplecov_branch_coverage(value, &mut covered, &mut total);
     ratio(covered, total)
+}
+
+fn collect_simplecov_branch_coverage(value: &Value, covered: &mut usize, total: &mut usize) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_simplecov_branch_coverage(value, covered, total);
+            }
+        }
+        Value::Object(values) => {
+            if let Some(hits) = values.get("coverage").and_then(Value::as_i64) {
+                *total += 1;
+                *covered += usize::from(hits > 0);
+                return;
+            }
+            for value in values.values() {
+                collect_simplecov_branch_coverage(value, covered, total);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_lcov(content: &str) -> CoverageEvidence {
@@ -295,6 +311,7 @@ fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
             &["equivalent", "equivalent_marked", "equivalentMarked"],
         )
         .unwrap_or(0),
+        score_override: None,
         per_test_kills: BTreeMap::new(),
     };
 
@@ -308,12 +325,8 @@ fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
             mutants
                 .iter()
                 .filter(|mutant| {
-                    string_any(mutant, &["status", "result"]).is_some_and(|status| {
-                        matches!(
-                            status.as_str(),
-                            "killed" | "KILLED" | "timeout" | "Timeout" | "TIMED_OUT"
-                        )
-                    })
+                    string_any(mutant, &["status", "result"])
+                        .is_some_and(|status| is_killed_status(&status))
                 })
                 .count(),
         );
@@ -326,14 +339,64 @@ fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
         mutation.per_test_kills = parse_string_set_map(per_test);
     }
 
-    if mutation.total == 0
-        && let Some(score) = value.get("mutation_score").and_then(Value::as_f64)
-    {
-        mutation.total = 1000;
-        mutation.killed = (score * 1000.0).round() as usize;
+    if mutation.total == 0 {
+        mutation.score_override = value
+            .get("mutation_score")
+            .or_else(|| value.get("mutationScore"))
+            .and_then(Value::as_f64);
     }
 
     Ok(mutation)
+}
+
+fn parse_stryker_json(content: &str) -> AdapterResult<MutationEvidence> {
+    let value = parse_json(content)?;
+    let mut mutation = MutationEvidence::default();
+    let Some(files) = value.get("files").and_then(Value::as_object) else {
+        return parse_mutation_json(content);
+    };
+
+    for file in files.values() {
+        let Some(mutants) = file.get("mutants").and_then(Value::as_array) else {
+            continue;
+        };
+        for (index, mutant) in mutants.iter().enumerate() {
+            mutation.total += 1;
+            let status = string_any(mutant, &["status", "result"]).unwrap_or_default();
+            if is_killed_status(&status) {
+                mutation.killed += 1;
+            }
+            let mutant_id = mutant
+                .get("id")
+                .and_then(|id| {
+                    id.as_str()
+                        .map(ToOwned::to_owned)
+                        .or_else(|| id.as_u64().map(|id| id.to_string()))
+                })
+                .unwrap_or_else(|| index.to_string());
+            for test_id in mutant
+                .get("killedBy")
+                .or_else(|| mutant.get("killed_by"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                mutation
+                    .per_test_kills
+                    .entry(test_id.to_owned())
+                    .or_default()
+                    .insert(mutant_id.clone());
+            }
+        }
+    }
+    Ok(mutation)
+}
+
+fn is_killed_status(status: &str) -> bool {
+    status.eq_ignore_ascii_case("killed")
+        || status.eq_ignore_ascii_case("timeout")
+        || status.eq_ignore_ascii_case("timed_out")
 }
 
 fn parse_per_test_json(content: &str) -> AdapterResult<PerTestCoverageEvidence> {
@@ -469,15 +532,6 @@ fn parse_requirement_item(value: &Value) -> Option<CoverageRequirement> {
     })
 }
 
-fn flatten_json_numbers(value: &Value) -> Vec<i64> {
-    match value {
-        Value::Number(number) => number.as_i64().into_iter().collect(),
-        Value::Array(values) => values.iter().flat_map(flatten_json_numbers).collect(),
-        Value::Object(values) => values.values().flat_map(flatten_json_numbers).collect(),
-        _ => Vec::new(),
-    }
-}
-
 fn usize_value(value: &Value, keys: &[&str]) -> Option<usize> {
     keys.iter().find_map(|key| {
         value
@@ -549,6 +603,60 @@ end_of_record
         .unwrap();
         assert_eq!(mutation.score(), Some(2.0 / 3.0));
         assert_eq!(mutation.per_test_kills["case-1"].len(), 2);
+    }
+
+    #[test]
+    fn parses_nested_stryker_mutants_and_title_case_statuses() {
+        let mutation = parse_stryker_json(
+            r#"{
+              "files": {
+                "lib/cart.rb": {
+                  "mutants": [
+                    {"id": "m1", "status": "Killed", "killedBy": ["case-1"]},
+                    {"id": "m2", "status": "Survived"},
+                    {"id": "m3", "status": "Timeout"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(mutation.total, 3);
+        assert_eq!(mutation.killed, 2);
+        assert_eq!(
+            mutation.per_test_kills["case-1"],
+            BTreeSet::from(["m1".to_owned()])
+        );
+    }
+
+    #[test]
+    fn preserves_summary_only_mutation_scores_without_fabricated_counts() {
+        let mutation = parse_mutation_json(r#"{"mutation_score": 0.7}"#).unwrap();
+
+        assert_eq!(mutation.score(), Some(0.7));
+        assert_eq!(mutation.total, 0);
+        assert_eq!(mutation.killed, 0);
+    }
+
+    #[test]
+    fn simplecov_branches_count_only_coverage_values() {
+        let branches = serde_json::json!({
+            "[:then, 0, 5, 2, 5, 8]": {
+                "type": "then",
+                "start_line": 5,
+                "start_column": 2,
+                "coverage": 2
+            },
+            "[:else, 1, 7, 2, 7, 8]": {
+                "type": "else",
+                "start_line": 7,
+                "start_column": 2,
+                "coverage": 0
+            }
+        });
+
+        assert_eq!(branch_rate_from_simplecov(&branches), Some(0.5));
     }
 
     #[test]

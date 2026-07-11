@@ -55,6 +55,8 @@ fn redundancy_candidates(
     }
 
     let mut candidate_ids = BTreeSet::new();
+    let mut structural_ids = BTreeSet::new();
+    let mut assertion_overlap_ids = BTreeSet::new();
     let mut findings = Vec::new();
 
     if let Some(mutation) = evidence.mutation.as_ref() {
@@ -81,12 +83,15 @@ fn redundancy_candidates(
         );
     }
 
+    let token_sets = cases.iter().map(|case_| tokens(case_)).collect::<Vec<_>>();
     for left_index in 0..cases.len() {
         for right_index in (left_index + 1)..cases.len() {
             let left = cases[left_index];
             let right = cases[right_index];
-            let similarity = similarity(left, right);
-            if similarity >= rules.structural_similarity_threshold {
+            let similarity = similarity(&token_sets[left_index], &token_sets[right_index]);
+            if similarity >= rules.structural_similarity_threshold
+                && structural_ids.insert(right.id.clone())
+            {
                 candidate_ids.insert(right.id.clone());
                 findings.push(redundancy_finding(
                     "redundancy.structural_similarity",
@@ -100,7 +105,7 @@ fn redundancy_candidates(
                 ));
             }
 
-            if assertion_overlap(left, right) {
+            if assertion_overlap(left, right) && assertion_overlap_ids.insert(right.id.clone()) {
                 candidate_ids.insert(right.id.clone());
                 findings.push(redundancy_finding(
                     "redundancy.assertion_overlap",
@@ -340,14 +345,12 @@ fn requirement_key(requirement: &CoverageRequirement) -> String {
     format!("{}:{}", requirement.path, requirement.line)
 }
 
-fn similarity(left: &TestCase, right: &TestCase) -> f64 {
-    let left_tokens = tokens(left);
-    let right_tokens = tokens(right);
+fn similarity(left_tokens: &BTreeSet<String>, right_tokens: &BTreeSet<String>) -> f64 {
     if left_tokens.is_empty() && right_tokens.is_empty() {
         return 1.0;
     }
-    let intersection = left_tokens.intersection(&right_tokens).count() as f64;
-    let union = left_tokens.union(&right_tokens).count() as f64;
+    let intersection = left_tokens.intersection(right_tokens).count() as f64;
+    let union = left_tokens.union(right_tokens).count() as f64;
     if union == 0.0 {
         0.0
     } else {
@@ -429,5 +432,27 @@ mod tests {
         );
 
         assert!(report.metric_value("redundancy.candidate_ratio").unwrap() > 0.0);
+    }
+
+    #[test]
+    fn structural_finding_ratio_never_exceeds_one() {
+        let report = analyze_content(
+            Path::new("spec/cart_spec.rb"),
+            r#"
+            RSpec.describe Cart do
+              it("one") { expect(cart.count).to eq(1) }
+              it("two") { expect(cart.count).to eq(1) }
+              it("three") { expect(cart.count).to eq(1) }
+            end
+            "#,
+            &AppConfig::default(),
+        );
+
+        assert!(
+            report
+                .metric_value("redundancy.structural_similarity")
+                .unwrap()
+                <= 1.0
+        );
     }
 }
