@@ -4,7 +4,7 @@ use testament_adapter_api::{
     AdapterResult, DetectScore, FrameworkAdapter, FrameworkSemantics, MatcherSemantics, SyntaxTree,
 };
 use testament_core::TestFileIr;
-use testament_lang_ruby::RubyAdapter;
+use testament_lang_ruby::{RubyAdapter, apply_framework_semantics};
 
 pub struct TestUnitAdapter;
 
@@ -27,7 +27,10 @@ impl FrameworkAdapter for TestUnitAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        testament_adapter_api::FrameworkAdapter::lower(&RubyAdapter, tree, path)
+        let mut ir = testament_adapter_api::FrameworkAdapter::lower(&RubyAdapter, tree, path)?;
+        ir.framework = self.id().to_owned();
+        apply_framework_semantics(&mut ir, &self.semantics());
+        Ok(ir)
     }
 
     fn semantics(&self) -> FrameworkSemantics {

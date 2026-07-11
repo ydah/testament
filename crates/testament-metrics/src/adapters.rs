@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::Path;
 
 use testament_adapter_api::{DetectScore, FrameworkAdapter, LanguageAdapter, SyntaxTree};
@@ -73,14 +74,59 @@ fn best_framework<'a>(
 ) -> Option<&'a dyn FrameworkAdapter> {
     adapters
         .iter()
-        .filter(|adapter| adapter.language() == tree.language.as_str())
-        .map(|adapter| {
+        .enumerate()
+        .filter(|(_, adapter)| adapter.language() == tree.language.as_str())
+        .map(|(index, adapter)| {
             (
+                index,
                 adapter.as_ref(),
                 FrameworkAdapter::detect(adapter.as_ref(), tree, path),
             )
         })
-        .filter(|(_, score)| *score > DetectScore::NONE)
-        .max_by_key(|(_, score)| *score)
-        .map(|(adapter, _)| adapter)
+        .filter(|(_, _, score)| *score > DetectScore::NONE)
+        .max_by_key(|(index, _, score)| (*score, Reverse(*index)))
+        .map(|(_, adapter, _)| adapter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_minitest_markers_win_over_rspec_syntax() {
+        let ir = AdapterRegistry::builtin().lower(
+            Path::new("test/widget_test.rb"),
+            r#"
+require "minitest/autorun"
+
+describe Widget do
+  it "works" do
+    expect(Widget.new).must_equal Widget.new
+  end
+end
+"#,
+        );
+
+        assert_eq!(ir.framework, "minitest");
+        assert_eq!(ir.case_count(), 1);
+    }
+
+    #[test]
+    fn explicit_test_unit_markers_win_over_test_file_fallbacks() {
+        let ir = AdapterRegistry::builtin().lower(
+            Path::new("test/widget_test.rb"),
+            r#"
+require "test/unit"
+
+class WidgetTest < Test::Unit::TestCase
+  def test_works
+    assert_equal 1, 1
+  end
+end
+"#,
+        );
+
+        assert_eq!(ir.framework, "test-unit");
+        assert_eq!(ir.case_count(), 1);
+    }
 }

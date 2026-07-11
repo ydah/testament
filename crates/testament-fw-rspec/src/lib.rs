@@ -4,7 +4,7 @@ use testament_adapter_api::{
     AdapterResult, DetectScore, FrameworkAdapter, FrameworkSemantics, MatcherSemantics, SyntaxTree,
 };
 use testament_core::TestFileIr;
-use testament_lang_ruby::RubyAdapter;
+use testament_lang_ruby::{RubyAdapter, apply_framework_semantics};
 
 pub struct RSpecAdapter;
 
@@ -19,6 +19,13 @@ impl FrameworkAdapter for RSpecAdapter {
 
     fn detect(&self, tree: &SyntaxTree, path: &Path) -> DetectScore {
         let content = tree.text();
+        if content.contains("minitest/autorun")
+            || content.contains("Minitest::")
+            || content.contains("Test::Unit")
+            || content.contains("test/unit")
+        {
+            return DetectScore::NONE;
+        }
         if content.contains("RSpec.describe")
             || content.contains("expect(")
             || path.to_string_lossy().ends_with("_spec.rb")
@@ -30,7 +37,10 @@ impl FrameworkAdapter for RSpecAdapter {
     }
 
     fn lower(&self, tree: &SyntaxTree, path: &Path) -> AdapterResult<TestFileIr> {
-        testament_adapter_api::FrameworkAdapter::lower(&RubyAdapter, tree, path)
+        let mut ir = testament_adapter_api::FrameworkAdapter::lower(&RubyAdapter, tree, path)?;
+        ir.framework = self.id().to_owned();
+        apply_framework_semantics(&mut ir, &self.semantics());
+        Ok(ir)
     }
 
     fn semantics(&self) -> FrameworkSemantics {

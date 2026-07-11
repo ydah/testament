@@ -167,6 +167,8 @@ pub struct TestCase {
     pub print_lines: Vec<SourceSpan>,
     pub literals: Vec<LiteralValue>,
     pub normalized_body: Vec<String>,
+    #[serde(default)]
+    pub calls: Vec<CallSite>,
 }
 
 impl TestCase {
@@ -186,6 +188,7 @@ impl TestCase {
             print_lines: Vec::new(),
             literals: Vec::new(),
             normalized_body: Vec::new(),
+            calls: Vec::new(),
         }
     }
 
@@ -360,6 +363,15 @@ pub struct Fixture {
 pub struct HelperDef {
     pub name: String,
     pub span: SourceSpan,
+    #[serde(default)]
+    pub contains_assertion: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct CallSite {
+    pub method: String,
+    pub expression: String,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -398,8 +410,22 @@ pub struct SharedExampleRef {
 }
 
 pub fn stable_test_id(path: &Path, suite: &str, name: &str, line: usize) -> String {
-    let input = format!("{}::{suite}::{name}::{line}", path.to_string_lossy());
+    let input = format!("{}::{suite}::{name}::{line}", stable_test_path(path));
     format!("{:016x}", fnv1a_64(input.as_bytes()))
+}
+
+fn stable_test_path(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let normalized = normalized.trim_start_matches("./");
+    for marker in ["spec/", "test/"] {
+        if let Some(index) = normalized.find(marker) {
+            let boundary = index == 0 || normalized.as_bytes().get(index - 1) == Some(&b'/');
+            if boundary {
+                return normalized[index..].to_owned();
+            }
+        }
+    }
+    normalized.to_owned()
 }
 
 fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -409,4 +435,22 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_ids_ignore_absolute_project_prefixes() {
+        assert_eq!(
+            stable_test_id(Path::new("spec/cart_spec.rb"), "Cart", "works", 3),
+            stable_test_id(
+                Path::new("/checkout/project/spec/cart_spec.rb"),
+                "Cart",
+                "works",
+                3
+            )
+        );
+    }
 }
