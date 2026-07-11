@@ -3,12 +3,13 @@
 `testament` is a Rust CLI and library workspace for evaluating test quality
 guardrails from static test IR and optional dynamic evidence. The first
 supported target is Ruby test suites, with RSpec, Minitest, and test-unit
-adapters.
+adapters. Ruby syntax is parsed with Prism through the `ruby-prism` crate.
 
 ## What It Measures
 
 - Adequacy signals such as assertion density, line/branch coverage, mutation
-  score, and checked coverage from trace evidence.
+  score, checked coverage from trace evidence, and a separately identified
+  static checked-coverage approximation.
 - Redundancy signals from static similarity, assertion overlap, per-test
   coverage, and per-test mutation evidence.
 - Maintainability signals from test-smell rules.
@@ -24,6 +25,8 @@ adapters.
 testament check
 testament report --format json spec/user_spec.rb
 testament explain adequacy.assertion_density
+testament explain --file spec/user_spec.rb
+testament check --no-rename-tracking
 ```
 
 ## Development

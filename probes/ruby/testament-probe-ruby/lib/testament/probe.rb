@@ -30,6 +30,9 @@ module Testament
         @root = File.expand_path(ENV.fetch("TESTAMENT_PROJECT_ROOT", Dir.pwd))
         @probe_file = File.expand_path(__FILE__)
         @trace_window = ENV.fetch("TESTAMENT_TRACE_WINDOW", DEFAULT_TRACE_WINDOW).to_i
+        @trace_enabled = ENV.fetch("TESTAMENT_TRACE", "1") != "0"
+        start_coverage
+        capture_coverage
         install_rspec if defined?(RSpec)
         install_minitest if defined?(Minitest::Test)
         at_exit { write! }
@@ -51,7 +54,6 @@ module Testament
         @recent_lines = previous_recent_lines || []
         @assertion_depth = previous_assertion_depth || 0
         @current_case = previous_case
-        write!
       end
 
       def write!
@@ -77,20 +79,23 @@ module Testament
       end
 
       def start_coverage
-        return if coverage_running?
+        return false if coverage_running?
 
         Coverage.start(lines: true)
+        true
       end
 
       def start_trace
+        return unless @trace_enabled
+
         @tracepoint ||= TracePoint.new(:line, :call, :c_call, :return, :c_return) do |event|
           case event.event
           when :line
             record_trace_line(event.path, event.lineno)
           when :call, :c_call
-            enter_assertion if assertion_method?(event.method_id)
+            enter_assertion if assertion_method?(event.method_id, event.defined_class)
           when :return, :c_return
-            leave_assertion if assertion_method?(event.method_id)
+            leave_assertion if assertion_method?(event.method_id, event.defined_class)
           end
         end
         @tracepoint.enable unless @tracepoint.enabled?
@@ -176,8 +181,11 @@ module Testament
         expanded.delete_prefix("#{root}/")
       end
 
-      def assertion_method?(method_id)
-        ASSERTION_METHODS.include?(method_id)
+      def assertion_method?(method_id, defined_class)
+        return false unless ASSERTION_METHODS.include?(method_id)
+
+        owner = defined_class.to_s
+        owner.include?("RSpec") || owner.include?("Minitest") || owner.include?("Test::Unit")
       end
 
       def trace_window
@@ -196,10 +204,21 @@ module Testament
 
       def line_hits(value)
         if value.is_a?(Hash)
+          unless value.key?(:lines) || value.key?("lines")
+            warn_missing_line_coverage
+            return []
+          end
           value.fetch(:lines, value.fetch("lines", []))
         else
           value || []
         end
+      end
+
+      def warn_missing_line_coverage
+        return if @warned_missing_line_coverage
+
+        warn "testament probe: Coverage is active without lines mode; per-test coverage will be empty"
+        @warned_missing_line_coverage = true
       end
 
       def install_rspec

@@ -21,5 +21,8 @@ methods are active, and recent executed lines observed when assertions begin.
 `TESTAMENT_TRACE_WINDOW` controls how many recent lines are attributed to an
 assertion.
 
+Line/call tracing adds noticeable overhead to the test run. Set
+`TESTAMENT_TRACE=0` to collect per-test line coverage without trace evidence.
+
 The probe installs hooks for RSpec and Minitest when those constants are loaded.
 Load the probe after the test framework is required.
