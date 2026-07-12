@@ -1,6 +1,7 @@
 require "coverage"
 require "fileutils"
 require "json"
+require_relative "probe/version"
 
 module Testament
   module Probe

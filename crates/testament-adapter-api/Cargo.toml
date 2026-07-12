@@ -1,13 +1,19 @@
 [package]
 name = "testament-adapter-api"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 rust-version.workspace = true
+description = "Adapter traits and syntax tree abstractions for testament"
 
 [dependencies]
-testament-core = { path = "../testament-core" }
+testament-core.workspace = true
 
 [lib]
 path = "src/lib.rs"
-

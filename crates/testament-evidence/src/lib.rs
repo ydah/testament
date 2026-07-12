@@ -1,3 +1,5 @@
+//! Parsers for coverage, mutation-testing, per-test coverage, and trace evidence.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

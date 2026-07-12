@@ -1,3 +1,5 @@
+//! Core configuration, evidence, intermediate-representation, metric, and gate types.
+
 pub mod config;
 pub mod discovery;
 pub mod evidence;

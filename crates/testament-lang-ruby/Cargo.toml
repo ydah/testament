@@ -1,13 +1,20 @@
 [package]
 name = "testament-lang-ruby"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 rust-version.workspace = true
+description = "Prism-based Ruby test parser and IR lowering for testament"
 
 [dependencies]
-testament-adapter-api = { path = "../testament-adapter-api" }
-testament-core = { path = "../testament-core" }
+testament-adapter-api.workspace = true
+testament-core.workspace = true
 ruby-prism = "1.9.0"
 
 [lib]

@@ -1,3 +1,5 @@
+//! Adapter contracts shared by testament language and test-framework integrations.
+
 use std::path::Path;
 
 use testament_core::{EvidenceSet, TestFileIr};

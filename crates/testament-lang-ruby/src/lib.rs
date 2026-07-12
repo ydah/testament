@@ -1,3 +1,5 @@
+//! Prism-based Ruby syntax parsing and test-IR lowering.
+
 use std::path::{Path, PathBuf};
 
 use ruby_prism::{Node, Visit};

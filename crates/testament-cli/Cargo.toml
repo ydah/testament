@@ -1,9 +1,16 @@
 [package]
 name = "testament-cli"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 rust-version.workspace = true
+description = "Research-informed test quality guardrails for Ruby test suites"
 
 [[bin]]
 name = "testament"
@@ -11,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-testament-core = { path = "../testament-core" }
-testament-evidence = { path = "../testament-evidence" }
-testament-metrics = { path = "../testament-metrics" }
-testament-report = { path = "../testament-report" }
+testament-core.workspace = true
+testament-evidence.workspace = true
+testament-metrics.workspace = true
+testament-report.workspace = true

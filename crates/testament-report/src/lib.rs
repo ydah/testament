@@ -1,3 +1,5 @@
+//! TTY, JSON, Markdown, SARIF, JUnit, and baseline report rendering.
+
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use serde_json::{Value, json};

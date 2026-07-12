@@ -16,8 +16,29 @@ adapters. Ruby syntax is parsed with Prism through the `ruby-prism` crate.
 
 ## Requirements
 
-- Rust 1.91, managed by [rust-toolchain.toml](rust-toolchain.toml)
+- Rust 1.91, managed by
+  [rust-toolchain.toml](https://github.com/ydah/testament/blob/main/rust-toolchain.toml)
 - Ruby 3.1 or newer for the Ruby probe syntax/runtime checks
+
+## Installation
+
+Install the CLI from crates.io:
+
+```sh
+cargo install testament-cli
+```
+
+Install the optional Ruby probe from RubyGems.org:
+
+```sh
+gem install testament-probe-ruby
+```
+
+To install the current `main` branch directly from the repository:
+
+```sh
+cargo install --git https://github.com/ydah/testament testament-cli
+```
 
 ## Usage
 
@@ -54,9 +75,13 @@ require "testament/probe"
 
 By default it writes `.testament/per-test-coverage.json` and
 `.testament/trace.json`. See
-[probes/ruby/testament-probe-ruby/README.md](probes/ruby/testament-probe-ruby/README.md)
+[Ruby probe README](https://github.com/ydah/testament/blob/main/probes/ruby/testament-probe-ruby/README.md)
 for probe-specific options.
 
 ## License
 
-This project is licensed under the MIT license. See [LICENSE](LICENSE).
+This project is licensed under the MIT license. See
+[LICENSE](https://github.com/ydah/testament/blob/main/LICENSE).
+
+Maintainer release instructions are documented in
+[RELEASING.md](https://github.com/ydah/testament/blob/main/RELEASING.md).

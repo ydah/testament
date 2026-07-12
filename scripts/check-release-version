@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+workspace_versions="$(
+  cargo metadata --no-deps --format-version 1 \
+    | jq -r '[.packages[].version] | unique | join(",")'
+)"
+probe_version="$(
+  ruby -Iprobes/ruby/testament-probe-ruby/lib \
+    -rtestament/probe/version \
+    -e 'print Testament::Probe::VERSION'
+)"
+
+if [[ "$workspace_versions" == *,* ]]; then
+  echo "workspace crates have different versions: $workspace_versions" >&2
+  exit 1
+fi
+
+if [[ "$workspace_versions" != "$probe_version" ]]; then
+  echo "Rust workspace version $workspace_versions does not match Ruby probe version $probe_version" >&2
+  exit 1
+fi
+
+if [[ $# -gt 0 ]]; then
+  expected_version="${1#v}"
+  if [[ "$workspace_versions" != "$expected_version" ]]; then
+    echo "release version $workspace_versions does not match tag $1" >&2
+    exit 1
+  fi
+fi
+
+echo "release version $workspace_versions is consistent"

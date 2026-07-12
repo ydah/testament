@@ -1,15 +1,21 @@
 [package]
 name = "testament-fw-minitest"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 rust-version.workspace = true
+description = "Minitest framework semantics for testament"
 
 [dependencies]
-testament-adapter-api = { path = "../testament-adapter-api" }
-testament-core = { path = "../testament-core" }
-testament-lang-ruby = { path = "../testament-lang-ruby" }
+testament-adapter-api.workspace = true
+testament-core.workspace = true
+testament-lang-ruby.workspace = true
 
 [lib]
 path = "src/lib.rs"
-

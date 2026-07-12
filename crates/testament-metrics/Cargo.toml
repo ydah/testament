@@ -1,19 +1,26 @@
 [package]
 name = "testament-metrics"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 rust-version.workspace = true
+description = "Quality metric computation for testament test IR"
 
 [dependencies]
 serde_json.workspace = true
 sha2 = "0.10.9"
-testament-adapter-api = { path = "../testament-adapter-api" }
-testament-core = { path = "../testament-core" }
-testament-fw-minitest = { path = "../testament-fw-minitest" }
-testament-fw-rspec = { path = "../testament-fw-rspec" }
-testament-fw-testunit = { path = "../testament-fw-testunit" }
-testament-lang-ruby = { path = "../testament-lang-ruby" }
+testament-adapter-api.workspace = true
+testament-core.workspace = true
+testament-fw-minitest.workspace = true
+testament-fw-rspec.workspace = true
+testament-fw-testunit.workspace = true
+testament-lang-ruby.workspace = true
 
 [lib]
 path = "src/lib.rs"

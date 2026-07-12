@@ -1,3 +1,5 @@
+//! Adequacy, maintainability, and redundancy metrics for testament test IR.
+
 mod adapters;
 mod adequacy;
 mod cache;

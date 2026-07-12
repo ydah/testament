@@ -1,3 +1,5 @@
+//! Test::Unit detection and framework semantics for testament's Ruby adapter.
+
 use std::path::Path;
 
 use testament_adapter_api::{
