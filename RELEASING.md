@@ -30,6 +30,10 @@ Inspect the generated packages under `target/package/` before publishing.
 
 The first crates.io release must be published in dependency order. Wait until
 each crate is visible in the crates.io index before publishing its dependents.
+Do not run `cargo publish` without `-p` from the virtual workspace root: Cargo
+selects every workspace member and cannot verify unpublished inter-crate
+dependencies through its temporary registry. Publish and verify one crate at a
+time instead.
 
 ```sh
 cargo publish -p testament-core
