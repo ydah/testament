@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate release packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # Required to check out the tagged source.
+      checks: write # Required to publish the RustSec audit check result.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/check-release-version "$RELEASE_TAG"
+
+      - name: Run test suite
+        run: cargo test --workspace --locked
+
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ github.token }}
+
+      - name: Package Rust crates
+        run: cargo package --workspace --locked --no-verify
+
+      - name: Package Ruby probe
+        working-directory: probes/ruby/testament-probe-ruby
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          gem build testament-probe-ruby.gemspec \
+            --output "../../../target/package/testament-probe-ruby-${version}.gem"
+
+      - name: Upload registry packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: registry-packages
+          path: |
+            target/package/*.crate
+            target/package/*.gem
+          if-no-files-found: error
+
+  build-cli:
+    name: Build CLI for ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read # Required to check out the tagged source.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "$TARGET"
+        shell: bash
+
+      - name: Build CLI
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release --bin testament --target "$TARGET"
+        shell: bash
+
+      - name: Archive CLI
+        if: runner.os != 'Windows'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          tar -czf "dist/testament-${RELEASE_TAG}-${TARGET}.tar.gz" \
+            -C "target/${TARGET}/release" testament
+
+      - name: Archive CLI on Windows
+        if: runner.os == 'Windows'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path "target/$env:TARGET/release/testament.exe" `
+            -DestinationPath "dist/testament-$env:RELEASE_TAG-$env:TARGET.zip"
+        shell: pwsh
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - build-cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write # Required to create the GitHub Release and upload assets.
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --notes "Release artifacts for ${RELEASE_TAG}. See README.md for installation and usage."

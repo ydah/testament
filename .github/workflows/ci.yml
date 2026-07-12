@@ -44,6 +44,25 @@ jobs:
       - name: Run fixture report smoke test
         run: cargo run -p testament-cli -- --config fixtures/evidence/testament.toml report --format json fixtures/ruby/sample_spec.rb
 
+  rustsec:
+    name: Rust dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # Required to check out Cargo.lock.
+      checks: write # Required to publish the audit check result.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ github.token }}
+
   ruby-probe:
     name: Ruby probe on ${{ matrix.ruby }}
     runs-on: ubuntu-latest
@@ -69,6 +88,10 @@ jobs:
         uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1
         with:
           ruby-version: ${{ matrix.ruby }}
+
+      - name: Verify release version consistency
+        if: matrix.ruby == '3.4'
+        run: scripts/check-release-version
 
       - name: Check Ruby probe syntax
         run: ruby -c probes/ruby/testament-probe-ruby/lib/testament/probe.rb
