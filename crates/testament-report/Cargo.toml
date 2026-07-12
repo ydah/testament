@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-quick-xml = "0.40.1"
+quick-xml = "0.41.0"
 serde_json.workspace = true
 testament-core = { path = "../testament-core" }
 
