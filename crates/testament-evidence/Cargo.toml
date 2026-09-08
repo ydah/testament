@@ -13,6 +13,7 @@ rust-version.workspace = true
 description = "Coverage, mutation, and trace evidence parsers for testament"
 
 [dependencies]
+quick-xml.workspace = true
 serde_json.workspace = true
 testament-adapter-api.workspace = true
 testament-core.workspace = true

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -198,46 +199,61 @@ impl TestCase {
 }
 
 pub fn resolve_test_case_id(cases: &[&TestCase], raw_key: &str) -> Option<String> {
-    for case in cases {
-        if case.id == raw_key || case.evidence_aliases.iter().any(|alias| alias == raw_key) {
-            return Some(case.id.clone());
-        }
+    let exact = cases.iter().copied().filter(|case| {
+        case.id == raw_key || case.evidence_aliases.iter().any(|alias| alias == raw_key)
+    });
+    if let Some(case_id) = unique_case_id(exact) {
+        return Some(case_id);
     }
 
     let normalized_key = normalize_evidence_key(raw_key);
-    for case in cases {
-        if case
-            .evidence_aliases
+    if normalized_key.is_empty() {
+        return None;
+    }
+    let normalized = cases.iter().copied().filter(|case| {
+        case.evidence_aliases
             .iter()
             .any(|alias| normalize_evidence_key(alias) == normalized_key)
-        {
-            return Some(case.id.clone());
-        }
+    });
+    if let Some(case_id) = unique_case_id(normalized) {
+        return Some(case_id);
     }
 
-    let matches = cases
-        .iter()
-        .filter(|case| {
-            case.evidence_aliases.iter().any(|alias| {
-                let normalized_alias = normalize_evidence_key(alias);
-                !normalized_alias.is_empty()
-                    && (normalized_key.ends_with(&normalized_alias)
-                        || normalized_key.contains(&normalized_alias))
-            })
+    unique_case_id(cases.iter().copied().filter(|case| {
+        case.evidence_aliases.iter().any(|alias| {
+            let normalized_alias = normalize_evidence_key(alias);
+            !normalized_alias.is_empty()
+                && (normalized_key.ends_with(&normalized_alias)
+                    || normalized_key.contains(&normalized_alias))
         })
-        .collect::<Vec<_>>();
-    if matches.len() == 1 {
-        return Some(matches[0].id.clone());
-    }
-    None
+    }))
+}
+
+fn unique_case_id<'a>(cases: impl Iterator<Item = &'a TestCase>) -> Option<String> {
+    let ids = cases.map(|case| &case.id).collect::<BTreeSet<_>>();
+    (ids.len() == 1).then(|| (*ids.into_iter().next().expect("one id exists")).clone())
 }
 
 fn normalize_evidence_key(value: &str) -> String {
     value
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
+        .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+pub fn case_has_assertion(
+    case: &TestCase,
+    helpers: &[HelperDef],
+    extra_methods: &[String],
+) -> bool {
+    !case.assertions.is_empty()
+        || case.calls.iter().any(|call| {
+            extra_methods.iter().any(|method| method == &call.method)
+                || helpers
+                    .iter()
+                    .any(|helper| helper.contains_assertion && helper.name == call.method)
+        })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -261,6 +277,8 @@ pub struct Assertion {
     pub matcher: String,
     pub subject_expr: String,
     pub expected_expr: Option<String>,
+    #[serde(default)]
+    pub negative: bool,
     pub has_message: bool,
     pub span: SourceSpan,
 }
@@ -452,5 +470,20 @@ mod tests {
                 3
             )
         );
+    }
+
+    #[test]
+    fn evidence_case_matching_requires_a_unique_unicode_preserving_match() {
+        let mut first = TestCase::new("first", "同じ", SourceSpan::line(1));
+        first.evidence_aliases = vec!["同じ".to_owned()];
+        let mut second = TestCase::new("second", "同じ", SourceSpan::line(2));
+        second.evidence_aliases = vec!["同じ".to_owned()];
+
+        assert_eq!(
+            resolve_test_case_id(&[&first], "Suite 同じ"),
+            Some("first".to_owned())
+        );
+        assert_eq!(resolve_test_case_id(&[&first, &second], "同じ"), None);
+        assert_eq!(resolve_test_case_id(&[&first], "別名"), None);
     }
 }
