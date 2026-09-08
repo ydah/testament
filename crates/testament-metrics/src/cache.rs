@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,7 +60,11 @@ fn cache_key(path: &Path, content: &str) -> String {
     hasher.update(normalized_path(path));
     hasher.update([0]);
     hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    let mut key = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(key, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    key
 }
 
 fn normalized_path(path: &Path) -> String {
