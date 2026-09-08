@@ -560,14 +560,14 @@ dependencies = [
 
 [[package]]
 name = "testament-adapter-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "testament-core",
 ]
 
 [[package]]
 name = "testament-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "testament-core",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "testament-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "globset",
  "serde",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "testament-evidence"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quick-xml",
  "serde_json",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "testament-fw-minitest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "testament-adapter-api",
  "testament-core",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "testament-fw-rspec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "testament-adapter-api",
  "testament-core",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "testament-fw-testunit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "testament-adapter-api",
  "testament-core",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "testament-lang-ruby"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ruby-prism",
  "testament-adapter-api",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "testament-metrics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "sha2",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "testament-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quick-xml",
  "serde_json",
