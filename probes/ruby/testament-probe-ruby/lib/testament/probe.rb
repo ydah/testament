@@ -1,4 +1,3 @@
-require "coverage"
 require "fileutils"
 require "json"
 require_relative "probe/version"
@@ -8,6 +7,7 @@ module Testament
     DEFAULT_OUTPUT = ".testament/per-test-coverage.json"
     DEFAULT_TRACE_OUTPUT = ".testament/trace.json"
     DEFAULT_TRACE_WINDOW = 200
+    THREAD_STATE_KEY = :testament_probe_recording
     ASSERTION_METHODS = %i[
       expect should should_not to not_to to_not
       assert assert_equal assert_same assert_nil assert_not_nil assert_empty
@@ -32,29 +32,27 @@ module Testament
         @probe_file = File.expand_path(__FILE__)
         @trace_window = ENV.fetch("TESTAMENT_TRACE_WINDOW", DEFAULT_TRACE_WINDOW).to_i
         @trace_enabled = ENV.fetch("TESTAMENT_TRACE", "1") != "0"
-        start_coverage
-        capture_coverage
         install_rspec if defined?(RSpec)
         install_minitest if defined?(Minitest::Test)
         at_exit { write! }
       end
 
       def record(case_id)
-        start_coverage
         start_trace
-        previous_case = @current_case
-        previous_recent_lines = @recent_lines
-        previous_assertion_depth = @assertion_depth
-        @recent_lines = []
-        @assertion_depth = 0
-        @current_case = case_id
-        trace_cases[case_id]
+        previous = Thread.current[THREAD_STATE_KEY]
+        recording = {
+          case_id: case_id,
+          coverage: {},
+          executed: {},
+          checked: {},
+          recent_lines: [],
+          assertion_depth: 0
+        }
+        Thread.current[THREAD_STATE_KEY] = recording
         yield
       ensure
-        merge_case(case_id, capture_coverage) if case_id
-        @recent_lines = previous_recent_lines || []
-        @assertion_depth = previous_assertion_depth || 0
-        @current_case = previous_case
+        merge_recording(recording) if case_id && recording
+        Thread.current[THREAD_STATE_KEY] = previous
       end
 
       def write!
@@ -79,17 +77,10 @@ module Testament
         end
       end
 
-      def start_coverage
-        return false if coverage_running?
-
-        Coverage.start(lines: true)
-        true
-      end
-
       def start_trace
-        return unless @trace_enabled
-
-        @tracepoint ||= TracePoint.new(:line, :call, :c_call, :return, :c_return) do |event|
+        events = [:line]
+        events.concat([:call, :c_call, :return, :c_return]) if @trace_enabled
+        @tracepoint ||= TracePoint.new(*events) do |event|
           case event.event
           when :line
             record_trace_line(event.path, event.lineno)
@@ -102,49 +93,56 @@ module Testament
         @tracepoint.enable unless @tracepoint.enabled?
       end
 
-      def coverage_running?
-        Coverage.respond_to?(:running?) && Coverage.running?
-      end
-
-      def capture_coverage
-        Coverage.result(stop: false, clear: true)
-      rescue ArgumentError
-        Coverage.result
-      end
-
-      def merge_case(case_id, coverage)
-        normalized = normalize_coverage(coverage)
-        return if normalized.empty?
-
-        existing = cases.fetch(case_id, {})
-        normalized.each do |path, lines|
-          merged = (existing.fetch(path, []) + lines).uniq.sort
-          existing[path] = merged
+      def merge_recording(recording)
+        mutex.synchronize do
+          merge_lines(cases, recording[:case_id], recording[:coverage])
+          if @trace_enabled
+            trace = trace_cases[recording[:case_id]]
+            merge_files(trace["executed"], recording[:executed])
+            merge_files(trace["checked"], recording[:checked])
+          end
         end
-        cases[case_id] = existing
+      end
+
+      def merge_lines(collection, case_id, files)
+        merge_files(collection[case_id] ||= {}, files)
+      end
+
+      def merge_files(existing, additions)
+        additions.each do |path, lines|
+          existing[path] = (existing.fetch(path, []) + lines).uniq.sort
+        end
+      end
+
+      def mutex
+        @mutex ||= Mutex.new
       end
 
       def record_trace_line(path, line)
-        return unless @current_case
+        recording = Thread.current[THREAD_STATE_KEY]
+        return unless recording
 
         path = normalize_trace_path(path)
         return unless path
 
-        trace = trace_cases[@current_case]
-        append_trace_line(trace["executed"], path, line)
-        append_trace_line(trace["checked"], path, line) if assertion_active?
-        @recent_lines ||= []
-        @recent_lines << [path, line]
-        @recent_lines.shift while @recent_lines.length > trace_window
+        append_trace_line(recording[:coverage], path, line)
+        return unless @trace_enabled
+
+        append_trace_line(recording[:executed], path, line)
+        append_trace_line(recording[:checked], path, line) if assertion_active?
+        recording[:recent_lines] << [path, line]
+        recording[:recent_lines].shift while recording[:recent_lines].length > trace_window
       end
 
       def enter_assertion
         mark_recent_lines_checked
-        @assertion_depth = assertion_depth + 1
+        recording = Thread.current[THREAD_STATE_KEY]
+        recording[:assertion_depth] = assertion_depth + 1 if recording
       end
 
       def leave_assertion
-        @assertion_depth = [assertion_depth - 1, 0].max
+        recording = Thread.current[THREAD_STATE_KEY]
+        recording[:assertion_depth] = [assertion_depth - 1, 0].max if recording
       end
 
       def assertion_active?
@@ -152,15 +150,15 @@ module Testament
       end
 
       def assertion_depth
-        @assertion_depth ||= 0
+        Thread.current[THREAD_STATE_KEY]&.fetch(:assertion_depth, 0) || 0
       end
 
       def mark_recent_lines_checked
-        return unless @current_case
+        recording = Thread.current[THREAD_STATE_KEY]
+        return unless recording
 
-        checked = trace_cases[@current_case]["checked"]
-        @recent_lines.each do |path, line|
-          append_trace_line(checked, path, line)
+        recording[:recent_lines].each do |path, line|
+          append_trace_line(recording[:checked], path, line)
         end
       end
 
@@ -193,39 +191,11 @@ module Testament
         [@trace_window || DEFAULT_TRACE_WINDOW, 1].max
       end
 
-      def normalize_coverage(coverage)
-        coverage.each_with_object({}) do |(path, value), result|
-          lines = line_hits(value)
-          covered = lines.each_with_index.filter_map do |hits, index|
-            index + 1 if hits && hits.positive?
-          end
-          result[path] = covered unless covered.empty?
-        end
-      end
-
-      def line_hits(value)
-        if value.is_a?(Hash)
-          unless value.key?(:lines) || value.key?("lines")
-            warn_missing_line_coverage
-            return []
-          end
-          value.fetch(:lines, value.fetch("lines", []))
-        else
-          value || []
-        end
-      end
-
-      def warn_missing_line_coverage
-        return if @warned_missing_line_coverage
-
-        warn "testament probe: Coverage is active without lines mode; per-test coverage will be empty"
-        @warned_missing_line_coverage = true
-      end
-
       def install_rspec
         RSpec.configure do |config|
           config.around(:each) do |example|
-            Testament::Probe.record(example.full_description) { example.run }
+            path = example.metadata[:file_path].to_s.sub(%r{\A\./}, "")
+            Testament::Probe.record("#{path}::#{example.full_description}") { example.run }
           end
         end
       end
