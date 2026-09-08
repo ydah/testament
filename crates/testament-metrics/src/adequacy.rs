@@ -27,6 +27,7 @@ pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet, rules: &RuleConfig) -> V
                 line_rate,
                 &coverage_path,
                 evidence.trace.as_ref(),
+                rules,
             ));
         }
         if let Some(branch_rate) = file_coverage.branch_coverage() {
@@ -221,6 +222,7 @@ fn checked_coverage(
     line_rate: f64,
     coverage_path: &str,
     trace: Option<&TraceEvidence>,
+    rules: &RuleConfig,
 ) -> MetricOutcome {
     if let Some(outcome) = dynamic_checked_coverage(ir, coverage, coverage_path, trace) {
         return outcome;
@@ -229,7 +231,7 @@ fn checked_coverage(
     let cases = ir.cases();
     let asserted_cases = cases
         .iter()
-        .filter(|case| !case.assertions.is_empty())
+        .filter(|case| case_has_assertion(case, &ir.helpers, &rules.extra_assertion_methods))
         .count();
     let assertion_reach = if cases.is_empty() {
         0.0
@@ -267,7 +269,7 @@ fn dynamic_checked_coverage(
 ) -> Option<MetricOutcome> {
     let trace = trace?;
     let trace_lines = dynamic_lines_for_ir(trace, ir, coverage_path);
-    if trace_lines.checked.is_empty() {
+    if trace_lines.matched_cases == 0 {
         return None;
     }
 
@@ -295,14 +297,15 @@ fn dynamic_checked_coverage(
         findings: Vec::new(),
         provenance: Provenance::new(
             &["A5"],
-            "Checked coverage estimates which executed SUT lines are reached by assertions.",
-            "Uses dynamic assertion-dependency trace evidence; the static approximation is reported under adequacy.checked_coverage_static.",
+            "Checked coverage estimates which executed SUT lines occur within or shortly before assertions.",
+            "Uses the probe's temporal recent-line window heuristic; it does not prove data dependency. The static approximation is reported under adequacy.checked_coverage_static.",
         ),
     })
 }
 
 #[derive(Default)]
 struct DynamicTraceLines {
+    matched_cases: usize,
     executed: BTreeSet<usize>,
     checked: BTreeSet<usize>,
 }
@@ -318,20 +321,24 @@ fn dynamic_lines_for_ir(
         if resolve_test_case_id(cases.as_slice(), case_key).is_none() {
             continue;
         }
-        lines.executed.extend(
-            case_trace
-                .executed_lines
-                .iter()
-                .filter(|requirement| same_path(&requirement.path, coverage_path))
-                .map(|requirement| requirement.line),
-        );
-        lines.checked.extend(
-            case_trace
-                .checked_lines
-                .iter()
-                .filter(|requirement| same_path(&requirement.path, coverage_path))
-                .map(|requirement| requirement.line),
-        );
+        let executed = case_trace
+            .executed_lines
+            .iter()
+            .filter(|requirement| same_path(&requirement.path, coverage_path))
+            .map(|requirement| requirement.line)
+            .collect::<Vec<_>>();
+        let checked = case_trace
+            .checked_lines
+            .iter()
+            .filter(|requirement| same_path(&requirement.path, coverage_path))
+            .map(|requirement| requirement.line)
+            .collect::<Vec<_>>();
+        if executed.is_empty() && checked.is_empty() {
+            continue;
+        }
+        lines.matched_cases += 1;
+        lines.executed.extend(executed);
+        lines.checked.extend(checked);
     }
     lines
 }
@@ -401,11 +408,55 @@ fn mutation_score(
 
 #[cfg(test)]
 mod path_tests {
-    use super::same_path;
+    use std::collections::BTreeMap;
+
+    use testament_core::{CoverageRequirement, SourceSpan, TestCase, TestSuite, TraceCaseEvidence};
+
+    use super::*;
 
     #[test]
     fn suffix_matching_respects_path_components() {
         assert!(same_path("/work/lib/cart.rb", "lib/cart.rb"));
         assert!(!same_path("lib/shopping_cart.rb", "cart.rb"));
+    }
+
+    #[test]
+    fn matched_trace_with_no_checked_lines_scores_zero() {
+        let mut ir = TestFileIr::new("spec/cart_spec.rb", "ruby", "rspec");
+        let mut case = TestCase::new("case-id", "works", SourceSpan::line(1));
+        case.evidence_aliases.push("case".to_owned());
+        let mut suite = TestSuite::new("Cart", SourceSpan::line(1));
+        suite.cases.push(case);
+        ir.suites.push(suite);
+        let coverage = FileCoverage {
+            covered_lines: BTreeSet::from([1, 2]),
+            executable_lines: BTreeSet::from([1, 2]),
+            ..FileCoverage::default()
+        };
+        let trace = TraceEvidence {
+            cases: BTreeMap::from([(
+                "case".to_owned(),
+                TraceCaseEvidence {
+                    executed_lines: BTreeSet::from([
+                        CoverageRequirement {
+                            path: "lib/cart.rb".to_owned(),
+                            line: 1,
+                        },
+                        CoverageRequirement {
+                            path: "lib/cart.rb".to_owned(),
+                            line: 2,
+                        },
+                    ]),
+                    checked_lines: BTreeSet::new(),
+                },
+            )]),
+        };
+
+        assert_eq!(
+            dynamic_checked_coverage(&ir, &coverage, "lib/cart.rb", Some(&trace))
+                .unwrap()
+                .value,
+            0.0
+        );
     }
 }

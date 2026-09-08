@@ -31,15 +31,20 @@ pub fn compute(ir: &TestFileIr, rules: &RuleConfig, evidence: &EvidenceSet) -> V
         assertion_overlap,
     ];
 
-    if let Some(per_test) = evidence.per_test_coverage.as_ref() {
-        outcomes.push(coverage_subsumption_score(ir, &per_test.cases));
+    if let Some(outcome) = evidence
+        .per_test_coverage
+        .as_ref()
+        .and_then(|per_test| coverage_subsumption_score(ir, &per_test.cases))
+    {
+        outcomes.push(outcome);
     }
-    if let Some(mutation) = evidence
+    if let Some(outcome) = evidence
         .mutation
         .as_ref()
         .filter(|mutation| !mutation.per_test_kills.is_empty())
+        .and_then(|mutation| mutant_subsumption_score(ir, &mutation.per_test_kills))
     {
-        outcomes.push(mutant_subsumption_score(ir, &mutation.per_test_kills));
+        outcomes.push(outcome);
     }
     outcomes
 }
@@ -214,7 +219,7 @@ fn assertion_overlap_score(ir: &TestFileIr, candidate_findings: &[Finding]) -> M
 fn coverage_subsumption_score(
     ir: &TestFileIr,
     cases: &BTreeMap<String, BTreeSet<CoverageRequirement>>,
-) -> MetricOutcome {
+) -> Option<MetricOutcome> {
     let ir_cases = ir.cases();
     let mapped = resolve_coverage_sets(ir_cases.as_slice(), cases);
     let represented = greedy_representatives(&mapped);
@@ -231,7 +236,7 @@ fn coverage_subsumption_score(
 fn mutant_subsumption_score(
     ir: &TestFileIr,
     cases: &BTreeMap<String, BTreeSet<String>>,
-) -> MetricOutcome {
+) -> Option<MetricOutcome> {
     let ir_cases = ir.cases();
     let mapped = resolve_string_sets(ir_cases.as_slice(), cases);
     let represented = greedy_representatives(&mapped);
@@ -252,18 +257,21 @@ fn representative_metric(
     representatives: usize,
     references: &[&str],
     definition: &str,
-) -> MetricOutcome {
-    let total_cases = ir.case_count().max(1);
+) -> Option<MetricOutcome> {
+    if known_cases == 0 {
+        return None;
+    }
     let redundant = known_cases.saturating_sub(representatives);
-    let ratio = redundant as f64 / total_cases as f64;
-    MetricOutcome {
+    let ratio = redundant as f64 / known_cases as f64;
+    Some(MetricOutcome {
         id: id.to_owned(),
         axis: Axis::Redundancy,
         score: Some((1.0 - ratio).clamp(0.0, 1.0)),
         value: ratio,
         unit: "ratio".to_owned(),
         summary: format!(
-            "{representatives} representative case(s), {redundant} redundancy candidate(s)"
+            "{representatives} representative case(s), {redundant} redundancy candidate(s), {known_cases}/{} case(s) matched",
+            ir.case_count()
         ),
         findings: Vec::new(),
         provenance: Provenance::new(
@@ -271,7 +279,7 @@ fn representative_metric(
             definition,
             "This is a review candidate workflow; no automatic deletion is performed.",
         ),
-    }
+    })
 }
 
 fn greedy_representatives(sets: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet<String> {

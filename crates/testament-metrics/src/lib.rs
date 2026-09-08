@@ -148,6 +148,7 @@ end
             branch_rate: Some(0.6),
             covered_lines: [1, 2, 3, 4].into_iter().collect(),
             executable_lines: [1, 2, 3, 4, 5].into_iter().collect(),
+            ..testament_core::FileCoverage::default()
         },
     );
     let evidence = EvidenceSet {
@@ -185,7 +186,7 @@ end
             equivalent_marked: 0,
             score_override: None,
             per_test_kills: [(
-                "catalog-case".to_owned(),
+                "Example works".to_owned(),
                 ["m1".to_owned()].into_iter().collect(),
             )]
             .into_iter()
@@ -193,7 +194,7 @@ end
         }),
         per_test_coverage: Some(testament_core::PerTestCoverageEvidence {
             cases: [(
-                "catalog-case".to_owned(),
+                "Example works".to_owned(),
                 [testament_core::CoverageRequirement {
                     path: "lib/example.rb".to_owned(),
                     line: 1,
@@ -340,6 +341,7 @@ mod tests {
                 branch_rate: Some(0.6),
                 covered_lines: [4].into_iter().collect(),
                 executable_lines: [3, 4, 5].into_iter().collect(),
+                ..FileCoverage::default()
             },
         );
         let evidence = EvidenceSet {
@@ -388,6 +390,7 @@ mod tests {
                 branch_rate: None,
                 covered_lines: [1, 2, 3, 4].into_iter().collect(),
                 executable_lines: [1, 2, 3, 4].into_iter().collect(),
+                ..FileCoverage::default()
             },
         );
         let evidence = EvidenceSet {
@@ -533,6 +536,30 @@ mod tests {
                 .unwrap()
                 > 0.0
         );
+    }
+
+    #[test]
+    fn omits_dynamic_redundancy_when_no_evidence_cases_match() {
+        let evidence = EvidenceSet {
+            per_test_coverage: Some(PerTestCoverageEvidence {
+                cases: BTreeMap::from([(
+                    "unrelated case".to_owned(),
+                    BTreeSet::from([CoverageRequirement {
+                        path: "lib/cart.rb".to_owned(),
+                        line: 1,
+                    }]),
+                )]),
+            }),
+            ..EvidenceSet::default()
+        };
+        let report = analyze_content_with_evidence(
+            Path::new("spec/cart_spec.rb"),
+            r#"RSpec.describe(Cart) { it("works") { expect(cart).to be_valid } }"#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(report.metric_value("redundancy.coverage_subsumption"), None);
     }
 
     #[test]

@@ -1102,11 +1102,11 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
     let normalized = path.to_string_lossy().replace('\\', "/");
     let mut candidates = Vec::new();
 
-    if let Some(candidate) = normalized
+    if let Some(candidate) = relative_test_path(&normalized)
         .strip_prefix("spec/")
         .and_then(|path| path.strip_suffix("_spec.rb"))
         .or_else(|| {
-            normalized
+            relative_test_path(&normalized)
                 .strip_prefix("test/")
                 .and_then(|path| path.strip_suffix("_test.rb"))
         })
@@ -1118,11 +1118,25 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
                 .to_owned(),
         );
     }
+    if let Some(test_path) = relative_test_path(&normalized).strip_prefix("test/") {
+        let (directory, file) = test_path.rsplit_once('/').unwrap_or(("", test_path));
+        if let Some(file) = file
+            .strip_prefix("test_")
+            .and_then(|file| file.strip_suffix(".rb"))
+        {
+            candidates.push(if directory.is_empty() {
+                file.to_owned()
+            } else {
+                format!("{directory}/{file}")
+            });
+        }
+    }
 
     if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
         && let Some(candidate) = stem
             .strip_suffix("_spec")
             .or_else(|| stem.strip_suffix("_test"))
+            .or_else(|| stem.strip_prefix("test_"))
     {
         candidates.push(
             candidate
@@ -1132,15 +1146,30 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
         );
     }
 
-    candidates.sort();
-    candidates.dedup();
-    candidates
+    let mut unique = Vec::new();
+    for candidate in candidates {
+        if !unique.contains(&candidate) {
+            unique.push(candidate);
+        }
+    }
+    unique
         .into_iter()
         .map(|candidate| SubjectHint {
             path: PathBuf::from(format!("lib/{candidate}.rb")),
             confidence: Confidence::Approximate,
         })
         .collect()
+}
+
+fn relative_test_path(path: &str) -> &str {
+    for marker in ["spec/", "test/"] {
+        if let Some(index) = path.find(marker)
+            && (index == 0 || path.as_bytes().get(index - 1) == Some(&b'/'))
+        {
+            return &path[index..];
+        }
+    }
+    path.trim_start_matches("./")
 }
 
 fn collect_file_metadata(
@@ -1766,6 +1795,18 @@ mod tests {
                 .assertions
                 .iter()
                 .all(|assertion| assertion.negative)
+        );
+    }
+
+    #[test]
+    fn infers_subjects_from_normalized_test_paths() {
+        assert_eq!(
+            infer_subject_hints(Path::new("./spec/domain/cart_spec.rb"))[0].path,
+            PathBuf::from("lib/domain/cart.rb")
+        );
+        assert_eq!(
+            infer_subject_hints(Path::new("/work/test/unit/test_cart.rb"))[0].path,
+            PathBuf::from("lib/unit/cart.rb")
         );
     }
 }
