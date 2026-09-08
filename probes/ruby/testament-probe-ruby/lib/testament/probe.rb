@@ -62,7 +62,11 @@ module Testament
 
         trace_output = @trace_output || DEFAULT_TRACE_OUTPUT
         FileUtils.mkdir_p(File.dirname(trace_output))
-        File.write(trace_output, JSON.pretty_generate("cases" => trace_cases))
+        File.write(trace_output, JSON.pretty_generate(
+          "method" => "temporal-recent-line-window",
+          "window" => trace_window,
+          "cases" => trace_cases
+        ))
       end
 
       private

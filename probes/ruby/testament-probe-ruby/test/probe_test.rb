@@ -47,3 +47,8 @@ coverage = Testament::Probe.send(:cases)
 raise "outside line entered case" if coverage.fetch("inside").key?("a.rb")
 raise "A coverage was contaminated" unless coverage.fetch("A").keys == ["a.rb"]
 raise "B coverage was contaminated" unless coverage.fetch("B").keys == ["b.rb"]
+
+Testament::Probe.write!
+trace = JSON.parse(File.read(ENV.fetch("TESTAMENT_TRACE_OUTPUT")))
+raise "trace method missing" unless trace["method"] == "temporal-recent-line-window"
+raise "trace window missing" unless trace["window"] == 200

@@ -19,7 +19,8 @@ The trace output records executed project lines, lines executed while assertion
 methods are active, and recent executed lines observed when assertions begin.
 `TESTAMENT_PROJECT_ROOT` controls the project-root filter, and
 `TESTAMENT_TRACE_WINDOW` controls how many recent lines are attributed to an
-assertion.
+assertion. The trace JSON records this window and the temporal approximation
+method alongside the cases.
 
 Line tracing collects per-test coverage without changing Ruby's process-wide
 `Coverage` counters. Call tracing adds further overhead for assertion evidence;
