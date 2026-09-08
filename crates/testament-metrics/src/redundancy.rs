@@ -374,12 +374,22 @@ fn assertion_overlap(left: &TestCase, right: &TestCase) -> bool {
     let left_keys = left
         .assertions
         .iter()
-        .map(|assertion| format!("{}|{}", assertion.kind.as_str(), assertion.subject_expr))
+        .map(|assertion| {
+            format!(
+                "{}|{}|{}|{}",
+                assertion.kind.as_str(),
+                assertion.matcher,
+                assertion.negative,
+                assertion.subject_expr
+            )
+        })
         .collect::<BTreeSet<_>>();
     right.assertions.iter().any(|assertion| {
         left_keys.contains(&format!(
-            "{}|{}",
+            "{}|{}|{}|{}",
             assertion.kind.as_str(),
+            assertion.matcher,
+            assertion.negative,
             assertion.subject_expr
         ))
     })

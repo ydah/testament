@@ -2,13 +2,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use testament_core::{
-    AssertionKind, Axis, CoverageEvidence, EvidenceSet, FileCoverage, MetricOutcome, Provenance,
-    TestFileIr, TraceEvidence, normalize_path, resolve_test_case_id,
+    AssertionKind, Axis, CoverageEvidence, EvidenceSet, FileCoverage, HelperDef, MetricOutcome,
+    Provenance, RuleConfig, TestCase, TestFileIr, TraceEvidence, case_has_assertion,
+    normalize_path, resolve_test_case_id,
 };
 
-pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet) -> Vec<MetricOutcome> {
+pub fn compute(ir: &TestFileIr, evidence: &EvidenceSet, rules: &RuleConfig) -> Vec<MetricOutcome> {
     let mut outcomes = vec![
-        assertion_density(ir),
+        assertion_density(ir, rules),
         assertion_diversity(ir),
         boundary_signal(ir),
     ];
@@ -65,9 +66,13 @@ fn sut_coverage_for_ir<'a>(
         .map(|file| (file, ir.path_display()))
 }
 
-fn assertion_density(ir: &TestFileIr) -> MetricOutcome {
+fn assertion_density(ir: &TestFileIr, rules: &RuleConfig) -> MetricOutcome {
     let cases = ir.case_count();
-    let assertions = ir.assertion_count();
+    let assertions = ir
+        .cases()
+        .into_iter()
+        .map(|case| effective_assertion_count(case, &ir.helpers, &rules.extra_assertion_methods))
+        .sum::<usize>();
     let density = if cases == 0 {
         0.0
     } else {
@@ -89,6 +94,18 @@ fn assertion_density(ir: &TestFileIr) -> MetricOutcome {
             "This is a static approximation and does not prove assertion quality.",
         ),
     }
+}
+
+fn effective_assertion_count(
+    case: &TestCase,
+    helpers: &[HelperDef],
+    extra_methods: &[String],
+) -> usize {
+    case.assertions.len().max(usize::from(case_has_assertion(
+        case,
+        helpers,
+        extra_methods,
+    )))
 }
 
 fn assertion_diversity(ir: &TestFileIr) -> MetricOutcome {

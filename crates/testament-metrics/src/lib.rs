@@ -62,7 +62,7 @@ pub fn analyze_ir_with_evidence(
     evidence: &EvidenceSet,
 ) -> FileReport {
     let mut outcomes = Vec::new();
-    outcomes.extend(adequacy::compute(&ir, evidence));
+    outcomes.extend(adequacy::compute(&ir, evidence, &config.rules));
     outcomes.push(smells::compute(&ir, &config.rules));
     outcomes.extend(redundancy::compute(&ir, &config.rules, evidence));
 
@@ -711,6 +711,7 @@ mod tests {
                 .iter()
                 .all(|finding| finding.rule_id != "smell.unknown_test")
         );
+        assert_eq!(report.metric_value("adequacy.assertion_density"), Some(1.0));
     }
 
     #[test]
@@ -734,6 +735,7 @@ mod tests {
                 .iter()
                 .all(|finding| finding.rule_id != "smell.unknown_test")
         );
+        assert_eq!(report.metric_value("adequacy.assertion_density"), Some(1.0));
     }
 
     #[test]
@@ -765,6 +767,50 @@ mod tests {
         assert_eq!(
             report.metric_score("maintainability.smell_score"),
             Some(0.95)
+        );
+    }
+
+    #[test]
+    fn smell_penalties_scale_by_affected_cases() {
+        let score = |count| {
+            let cases = (0..count)
+                .map(|index| {
+                    format!("it(\"case {index}\") {{ sleep 1; expect(true).to eq(true) }}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            analyze_content(
+                Path::new("spec/wait_spec.rb"),
+                &format!("RSpec.describe Wait do\n{cases}\nend"),
+                &AppConfig::default(),
+            )
+            .metric_score("maintainability.smell_score")
+            .unwrap()
+        };
+
+        assert!((score(3) - score(100)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn different_predicate_matchers_are_not_duplicate_assertions() {
+        let report = analyze_content(
+            Path::new("spec/user_spec.rb"),
+            r#"
+            RSpec.describe User do
+              it "checks state" do
+                expect(user).to be_valid
+                expect(user).to be_persisted
+              end
+            end
+            "#,
+            &AppConfig::default(),
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != "smell.duplicate_assert")
         );
     }
 
