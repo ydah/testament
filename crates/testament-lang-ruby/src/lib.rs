@@ -1284,6 +1284,12 @@ fn start_case(path: &Path, _framework: &str, suite: &str, node: &SyntaxNode) -> 
     let id = stable_test_id(path, suite, &name, node.start_byte);
     let mut case = TestCase::new(id, name, SourceSpan::line(node.start_line));
     case.evidence_aliases = evidence_aliases(&case.id, suite, &case.name);
+    let normalized_path = path.to_string_lossy().replace('\\', "/");
+    case.evidence_aliases.push(format!(
+        "{}:{}",
+        relative_test_path(&normalized_path),
+        node.start_line
+    ));
     if node.kind.starts_with("def:") {
         case.evidence_aliases.push(method.to_owned());
         case.evidence_aliases.push(format!("{suite}#{method}"));
@@ -1771,6 +1777,12 @@ mod tests {
         assert!(cases[0].assertions.is_empty());
         assert_eq!(cases[1].assertions.len(), 1);
         assert_ne!(cases[0].id, cases[1].id);
+        assert!(
+            cases[0]
+                .evidence_aliases
+                .iter()
+                .any(|alias| alias.starts_with("spec/user_spec.rb:"))
+        );
     }
 
     #[test]

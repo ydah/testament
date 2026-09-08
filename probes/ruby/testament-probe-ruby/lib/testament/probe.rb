@@ -194,8 +194,8 @@ module Testament
       def install_rspec
         RSpec.configure do |config|
           config.around(:each) do |example|
-            path = example.metadata[:file_path].to_s.sub(%r{\A\./}, "")
-            Testament::Probe.record("#{path}::#{example.full_description}") { example.run }
+            location = example.metadata[:location].to_s.sub(%r{\A\./}, "")
+            Testament::Probe.record("#{location}::#{example.full_description}") { example.run }
           end
         end
       end
