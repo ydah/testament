@@ -585,13 +585,7 @@ fn lower_case_node(
     suite: &str,
 ) -> Option<TestCase> {
     let span = expanded_case_span(tree, node);
-    let first_line = tree
-        .lines
-        .iter()
-        .find(|line| line.line == node.start_line)
-        .map(|line| line.text.trim().to_owned())
-        .unwrap_or_else(|| node.text.lines().next().unwrap_or("").trim().to_owned());
-    let mut case = start_case(path, framework, suite, &first_line, node.start_line)?;
+    let mut case = start_case(path, framework, suite, node)?;
     case.span = span.clone();
 
     let assertion_spans = collect_case_ast(&mut case, tree, node);
@@ -655,10 +649,10 @@ fn collect_case_ast(
     let assertion_nodes = descendants
         .iter()
         .copied()
-        .filter(|node| is_assertion_node(node))
+        .filter(|node| is_assertion_node(tree, node))
         .filter(|candidate| {
             !descendants.iter().any(|container| {
-                is_assertion_node(container)
+                is_assertion_node(tree, container)
                     && container.start_byte < candidate.start_byte
                     && candidate.end_byte <= container.end_byte
             })
@@ -742,11 +736,17 @@ fn collect_case_ast(
         .collect::<Vec<_>>()
 }
 
-fn is_assertion_node(node: &SyntaxNode) -> bool {
+fn is_assertion_node(tree: &SyntaxTree, node: &SyntaxNode) -> bool {
     let Some(name) = call_name(node) else {
         return false;
     };
-    matches!(name, "to" | "not_to" | "to_not" | "should" | "should_not")
+    matches!(name, "to" | "not_to" | "to_not")
+        && node
+            .children
+            .iter()
+            .filter_map(|index| tree.nodes.get(*index))
+            .any(|child| is_receiver_of_call(node, child) && call_name(child) == Some("expect"))
+        || matches!(name, "should" | "should_not")
         || name.starts_with("assert")
         || name.starts_with("refute")
         || name.starts_with("must_")
@@ -798,6 +798,7 @@ fn parse_assert_style_assertion_node(
         matcher: matcher.to_owned(),
         subject_expr,
         expected_expr,
+        negative: matcher.starts_with("refute") || matcher.starts_with("wont_"),
         has_message: arguments.len() > message_index,
         span: node_span(node),
     }
@@ -835,6 +836,7 @@ fn parse_rspec_assertion_node(tree: &SyntaxTree, node: &SyntaxNode) -> Assertion
         matcher,
         subject_expr,
         expected_expr,
+        negative: matches!(call_name(node), Some("not_to" | "to_not" | "should_not")),
         has_message: node.text.contains("because(") || node.text.contains("failure_message"),
         span: node_span(node),
     }
@@ -1100,11 +1102,11 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
     let normalized = path.to_string_lossy().replace('\\', "/");
     let mut candidates = Vec::new();
 
-    if let Some(candidate) = normalized
+    if let Some(candidate) = relative_test_path(&normalized)
         .strip_prefix("spec/")
         .and_then(|path| path.strip_suffix("_spec.rb"))
         .or_else(|| {
-            normalized
+            relative_test_path(&normalized)
                 .strip_prefix("test/")
                 .and_then(|path| path.strip_suffix("_test.rb"))
         })
@@ -1116,11 +1118,25 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
                 .to_owned(),
         );
     }
+    if let Some(test_path) = relative_test_path(&normalized).strip_prefix("test/") {
+        let (directory, file) = test_path.rsplit_once('/').unwrap_or(("", test_path));
+        if let Some(file) = file
+            .strip_prefix("test_")
+            .and_then(|file| file.strip_suffix(".rb"))
+        {
+            candidates.push(if directory.is_empty() {
+                file.to_owned()
+            } else {
+                format!("{directory}/{file}")
+            });
+        }
+    }
 
     if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
         && let Some(candidate) = stem
             .strip_suffix("_spec")
             .or_else(|| stem.strip_suffix("_test"))
+            .or_else(|| stem.strip_prefix("test_"))
     {
         candidates.push(
             candidate
@@ -1130,15 +1146,30 @@ fn infer_subject_hints(path: &Path) -> Vec<SubjectHint> {
         );
     }
 
-    candidates.sort();
-    candidates.dedup();
-    candidates
+    let mut unique = Vec::new();
+    for candidate in candidates {
+        if !unique.contains(&candidate) {
+            unique.push(candidate);
+        }
+    }
+    unique
         .into_iter()
         .map(|candidate| SubjectHint {
             path: PathBuf::from(format!("lib/{candidate}.rb")),
             confidence: Confidence::Approximate,
         })
         .collect()
+}
+
+fn relative_test_path(path: &str) -> &str {
+    for marker in ["spec/", "test/"] {
+        if let Some(index) = path.find(marker)
+            && (index == 0 || path.as_bytes().get(index - 1) == Some(&b'/'))
+        {
+            return &path[index..];
+        }
+    }
+    path.trim_start_matches("./")
 }
 
 fn collect_file_metadata(
@@ -1164,7 +1195,7 @@ fn collect_file_metadata(
         let contains_assertion = tree.nodes.iter().any(|candidate| {
             node.start_byte < candidate.start_byte
                 && candidate.end_byte <= node.end_byte
-                && is_assertion_node(candidate)
+                && is_assertion_node(tree, candidate)
         });
         ir.helpers.push(HelperDef {
             name: name.to_owned(),
@@ -1234,77 +1265,57 @@ fn is_suite_fixture_node(node: &SyntaxNode) -> bool {
     matches!(call_name(node), Some("before" | "setup")) || node.kind == "def:setup"
 }
 
-fn start_case(
-    path: &Path,
-    _framework: &str,
-    suite: &str,
-    trimmed: &str,
-    line_no: usize,
-) -> Option<TestCase> {
-    let skipped = starts_any(trimmed, &["xit ", "xit(", "xspecify ", "skip "]);
-    let pending = starts_any(trimmed, &["pending ", "pending("]);
-    let rspec_case = starts_any(
-        trimmed,
-        &[
-            "it ",
-            "it(",
-            "specify ",
-            "specify(",
-            "example ",
-            "example(",
-            "scenario ",
-        ],
-    ) || skipped
-        || pending;
-    let method_case = trimmed.starts_with("def test_");
-    let test_block = trimmed.starts_with("test ") || trimmed.starts_with("test(");
-
-    if !(method_case || test_block || rspec_case) {
+fn start_case(path: &Path, _framework: &str, suite: &str, node: &SyntaxNode) -> Option<TestCase> {
+    let method = call_name(node).or_else(|| node.kind.strip_prefix("def:"))?;
+    if !matches!(
+        method,
+        "it" | "specify" | "example" | "scenario" | "xit" | "xspecify" | "pending" | "test"
+    ) && !method.starts_with("test_")
+    {
         return None;
     }
 
-    let name = if let Some(method) = trimmed.strip_prefix("def test_") {
-        format!(
-            "test {}",
-            method
-                .split(['(', ' ', ';'])
-                .next()
-                .unwrap_or(method)
-                .replace('_', " ")
-        )
+    let name = if let Some(method) = method.strip_prefix("test_") {
+        format!("test {}", method.replace('_', " "))
     } else {
-        extract_name(trimmed).unwrap_or_else(|| format!("(anonymous at line {line_no})"))
+        extract_name(&node.text)
+            .unwrap_or_else(|| format!("(anonymous at line {})", node.start_line))
     };
-    let id = stable_test_id(path, suite, &name, line_no);
-    let mut case = TestCase::new(id, name, SourceSpan::line(line_no));
+    let id = stable_test_id(path, suite, &name, node.start_byte);
+    let mut case = TestCase::new(id, name, SourceSpan::line(node.start_line));
     case.evidence_aliases = evidence_aliases(&case.id, suite, &case.name);
-    if let Some(method) = trimmed.strip_prefix("def ") {
-        let method = method.split(['(', ' ', ';']).next().unwrap_or(method);
+    let normalized_path = path.to_string_lossy().replace('\\', "/");
+    case.evidence_aliases.push(format!(
+        "{}:{}",
+        relative_test_path(&normalized_path),
+        node.start_line
+    ));
+    if node.kind.starts_with("def:") {
         case.evidence_aliases.push(method.to_owned());
         case.evidence_aliases.push(format!("{suite}#{method}"));
         case.evidence_aliases.sort();
         case.evidence_aliases.dedup();
     }
 
-    if skipped {
+    if matches!(method, "xit" | "xspecify") {
         case.tags.push(Tag {
             kind: TagKind::Skipped,
             label: "skip".to_owned(),
-            span: SourceSpan::line(line_no),
+            span: SourceSpan::line(node.start_line),
         });
     }
-    if pending {
+    if method == "pending" {
         case.tags.push(Tag {
             kind: TagKind::Pending,
             label: "pending".to_owned(),
-            span: SourceSpan::line(line_no),
+            span: SourceSpan::line(node.start_line),
         });
     }
-    if trimmed.contains(":focus") || trimmed.contains("focus: true") {
+    if node.text.contains(":focus") || node.text.contains("focus: true") {
         case.tags.push(Tag {
             kind: TagKind::Focus,
             label: "focus".to_owned(),
-            span: SourceSpan::line(line_no),
+            span: SourceSpan::line(node.start_line),
         });
     }
 
@@ -1746,6 +1757,68 @@ mod tests {
                 .calls
                 .iter()
                 .any(|call| call.method == "expect_valid_order")
+        );
+    }
+
+    #[test]
+    fn distinguishes_expectations_from_stubs_and_lowers_inline_cases() {
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(
+                br#"
+                RSpec.describe User do; it("same") { allow(User).to receive(:find) }; it("same") { expect(User).to receive(:find) }; end
+                "#,
+            )
+            .unwrap();
+        let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/user_spec.rb")).unwrap();
+        let cases = ir.cases();
+
+        assert_eq!(cases.len(), 2);
+        assert!(cases[0].assertions.is_empty());
+        assert_eq!(cases[1].assertions.len(), 1);
+        assert_ne!(cases[0].id, cases[1].id);
+        assert!(
+            cases[0]
+                .evidence_aliases
+                .iter()
+                .any(|alias| alias.starts_with("spec/user_spec.rb:"))
+        );
+    }
+
+    #[test]
+    fn records_assertion_polarity() {
+        let adapter = RubyAdapter;
+        let tree = adapter
+            .parse(
+                br#"
+                RSpec.describe User do
+                  it "checks" do
+                    expect(user).not_to be_valid
+                    refute user.admin?
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+        let ir = FrameworkAdapter::lower(&adapter, &tree, Path::new("spec/user_spec.rb")).unwrap();
+
+        assert!(
+            ir.cases()[0]
+                .assertions
+                .iter()
+                .all(|assertion| assertion.negative)
+        );
+    }
+
+    #[test]
+    fn infers_subjects_from_normalized_test_paths() {
+        assert_eq!(
+            infer_subject_hints(Path::new("./spec/domain/cart_spec.rb"))[0].path,
+            PathBuf::from("lib/domain/cart.rb")
+        );
+        assert_eq!(
+            infer_subject_hints(Path::new("/work/test/unit/test_cart.rb"))[0].path,
+            PathBuf::from("lib/unit/cart.rb")
         );
     }
 }

@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::thread;
 
 use testament_core::{
-    AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
-    evaluate_gates,
+    AppConfig, Axis, EvidenceSet, FileReport, GateDirection, GateLevel, GateViolation,
+    MetricOutcome, TestFileIr, axis_average, evaluate_gates,
 };
 
 pub use adapters::AdapterRegistry;
@@ -62,7 +62,7 @@ pub fn analyze_ir_with_evidence(
     evidence: &EvidenceSet,
 ) -> FileReport {
     let mut outcomes = Vec::new();
-    outcomes.extend(adequacy::compute(&ir, evidence));
+    outcomes.extend(adequacy::compute(&ir, evidence, &config.rules));
     outcomes.push(smells::compute(&ir, &config.rules));
     outcomes.extend(redundancy::compute(&ir, &config.rules, evidence));
 
@@ -148,6 +148,7 @@ end
             branch_rate: Some(0.6),
             covered_lines: [1, 2, 3, 4].into_iter().collect(),
             executable_lines: [1, 2, 3, 4, 5].into_iter().collect(),
+            ..testament_core::FileCoverage::default()
         },
     );
     let evidence = EvidenceSet {
@@ -185,7 +186,7 @@ end
             equivalent_marked: 0,
             score_override: None,
             per_test_kills: [(
-                "catalog-case".to_owned(),
+                "Example works".to_owned(),
                 ["m1".to_owned()].into_iter().collect(),
             )]
             .into_iter()
@@ -193,7 +194,7 @@ end
         }),
         per_test_coverage: Some(testament_core::PerTestCoverageEvidence {
             cases: [(
-                "catalog-case".to_owned(),
+                "Example works".to_owned(),
                 [testament_core::CoverageRequirement {
                     path: "lib/example.rb".to_owned(),
                     line: 1,
@@ -223,6 +224,7 @@ pub fn evaluate_project(
     config: &AppConfig,
 ) -> testament_core::ProjectReport {
     let gate_eval = evaluate_gates(config, &files);
+    let mut gates = gate_eval.violations;
     let warnings = files
         .iter()
         .filter(|file| file.ir.confidence == testament_core::Confidence::Unresolved)
@@ -232,11 +234,28 @@ pub fn evaluate_project(
                 file.ir.path_display()
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    gates.extend(
+        files
+            .iter()
+            .filter(|file| file.ir.confidence == testament_core::Confidence::Unresolved)
+            .map(|file| GateViolation {
+                metric_id: "analysis.parse".to_owned(),
+                path: file.ir.path_display(),
+                level: GateLevel::Error,
+                observed: 0.0,
+                threshold: 1.0,
+                direction: GateDirection::Min,
+                message: "Ruby syntax could not be parsed exactly".to_owned(),
+            }),
+    );
+    let passed = gates
+        .iter()
+        .all(|violation| violation.level != GateLevel::Error);
     testament_core::ProjectReport {
         files,
-        passed: gate_eval.passed,
-        gates: gate_eval.violations,
+        passed,
+        gates,
         warnings,
     }
 }
@@ -322,6 +341,7 @@ mod tests {
                 branch_rate: Some(0.6),
                 covered_lines: [4].into_iter().collect(),
                 executable_lines: [3, 4, 5].into_iter().collect(),
+                ..FileCoverage::default()
             },
         );
         let evidence = EvidenceSet {
@@ -370,6 +390,7 @@ mod tests {
                 branch_rate: None,
                 covered_lines: [1, 2, 3, 4].into_iter().collect(),
                 executable_lines: [1, 2, 3, 4].into_iter().collect(),
+                ..FileCoverage::default()
             },
         );
         let evidence = EvidenceSet {
@@ -515,6 +536,30 @@ mod tests {
                 .unwrap()
                 > 0.0
         );
+    }
+
+    #[test]
+    fn omits_dynamic_redundancy_when_no_evidence_cases_match() {
+        let evidence = EvidenceSet {
+            per_test_coverage: Some(PerTestCoverageEvidence {
+                cases: BTreeMap::from([(
+                    "unrelated case".to_owned(),
+                    BTreeSet::from([CoverageRequirement {
+                        path: "lib/cart.rb".to_owned(),
+                        line: 1,
+                    }]),
+                )]),
+            }),
+            ..EvidenceSet::default()
+        };
+        let report = analyze_content_with_evidence(
+            Path::new("spec/cart_spec.rb"),
+            r#"RSpec.describe(Cart) { it("works") { expect(cart).to be_valid } }"#,
+            &AppConfig::default(),
+            &evidence,
+        );
+
+        assert_eq!(report.metric_value("redundancy.coverage_subsumption"), None);
     }
 
     #[test]
@@ -693,6 +738,7 @@ mod tests {
                 .iter()
                 .all(|finding| finding.rule_id != "smell.unknown_test")
         );
+        assert_eq!(report.metric_value("adequacy.assertion_density"), Some(1.0));
     }
 
     #[test]
@@ -716,6 +762,7 @@ mod tests {
                 .iter()
                 .all(|finding| finding.rule_id != "smell.unknown_test")
         );
+        assert_eq!(report.metric_value("adequacy.assertion_density"), Some(1.0));
     }
 
     #[test]
@@ -751,6 +798,50 @@ mod tests {
     }
 
     #[test]
+    fn smell_penalties_scale_by_affected_cases() {
+        let score = |count| {
+            let cases = (0..count)
+                .map(|index| {
+                    format!("it(\"case {index}\") {{ sleep 1; expect(true).to eq(true) }}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            analyze_content(
+                Path::new("spec/wait_spec.rb"),
+                &format!("RSpec.describe Wait do\n{cases}\nend"),
+                &AppConfig::default(),
+            )
+            .metric_score("maintainability.smell_score")
+            .unwrap()
+        };
+
+        assert!((score(3) - score(100)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn different_predicate_matchers_are_not_duplicate_assertions() {
+        let report = analyze_content(
+            Path::new("spec/user_spec.rb"),
+            r#"
+            RSpec.describe User do
+              it "checks state" do
+                expect(user).to be_valid
+                expect(user).to be_persisted
+              end
+            end
+            "#,
+            &AppConfig::default(),
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != "smell.duplicate_assert")
+        );
+    }
+
+    #[test]
     fn unresolved_files_score_zero_and_emit_a_project_warning() {
         let file = analyze_content(
             Path::new("spec/broken_spec.rb"),
@@ -762,5 +853,12 @@ mod tests {
 
         let project = evaluate_project(vec![file], &AppConfig::default());
         assert_eq!(project.warnings.len(), 1);
+        assert!(!project.passed);
+        assert!(
+            project
+                .gates
+                .iter()
+                .any(|gate| gate.metric_id == "analysis.parse")
+        );
     }
 }
