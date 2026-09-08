@@ -175,7 +175,7 @@ pub fn render_sarif(report: &ProjectReport) -> String {
             })
         })
         .collect::<Vec<_>>();
-    let results = report
+    let mut results = report
         .files
         .iter()
         .flat_map(|file| file.findings.iter().map(move |finding| (file, finding)))
@@ -197,6 +197,26 @@ pub fn render_sarif(report: &ProjectReport) -> String {
             })
         })
         .collect::<Vec<_>>();
+    results.extend(report.gates.iter().map(|gate| {
+        json!({
+            "ruleId": gate.metric_id,
+            "level": match gate.level {
+                GateLevel::Error => "error",
+                GateLevel::Warn => "warning",
+            },
+            "message": { "text": gate.message },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": { "uri": gate.path }
+                }
+            }],
+        })
+    }));
+    let notifications = report
+        .warnings
+        .iter()
+        .map(|warning| json!({ "level": "warning", "message": { "text": warning } }))
+        .collect::<Vec<_>>();
     let value = json!({
         "version": "2.1.0",
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -207,6 +227,10 @@ pub fn render_sarif(report: &ProjectReport) -> String {
                 "rules": rules,
             }},
             "results": results,
+            "invocations": [{
+                "executionSuccessful": report.passed,
+                "toolExecutionNotifications": notifications,
+            }],
         }],
     });
     format!(
@@ -221,16 +245,7 @@ pub fn render_junit(report: &ProjectReport) -> String {
         .iter()
         .filter(|gate| matches!(gate.level, GateLevel::Error))
         .collect::<Vec<_>>();
-    let file_failures = report
-        .files
-        .iter()
-        .filter(|file| {
-            file.findings
-                .iter()
-                .any(|finding| matches!(finding.severity, testament_core::Severity::Error))
-        })
-        .count();
-    let failures = gate_failures.len() + file_failures;
+    let failures = gate_failures.len();
     let tests = (report.files.len() + gate_failures.len()).max(1);
     let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
     writer
@@ -256,20 +271,6 @@ pub fn render_junit(report: &ProjectReport) -> String {
         writer
             .write_event(Event::Start(test_case))
             .expect("writing XML to memory cannot fail");
-        let error_findings = file
-            .findings
-            .iter()
-            .filter(|finding| matches!(finding.severity, testament_core::Severity::Error))
-            .collect::<Vec<_>>();
-        if !error_findings.is_empty() {
-            let message = format!("{} error finding(s)", error_findings.len());
-            let body = error_findings
-                .iter()
-                .map(|finding| format!("{}: {}", finding.rule_id, finding.message))
-                .collect::<Vec<_>>()
-                .join("\n");
-            write_failure(&mut writer, &message, &body);
-        }
         writer
             .write_event(Event::End(BytesEnd::new("testcase")))
             .expect("writing XML to memory cannot fail");
@@ -426,6 +427,7 @@ fn collect_rules(report: &ProjectReport) -> Vec<String> {
         .files
         .iter()
         .flat_map(|file| file.findings.iter().map(|finding| finding.rule_id.clone()))
+        .chain(report.gates.iter().map(|gate| gate.metric_id.clone()))
         .collect::<Vec<_>>();
     rules.sort();
     rules.dedup();
@@ -481,6 +483,12 @@ mod tests {
 
         assert!(sarif.contains("\"version\": \"2.1.0\""));
         assert!(sarif.contains("smell.unknown_test"));
+        assert!(
+            report
+                .gates
+                .iter()
+                .all(|gate| sarif.contains(&gate.metric_id))
+        );
         assert!(junit.contains("<testsuite"));
         if report
             .gates
@@ -496,20 +504,11 @@ mod tests {
                 .iter()
                 .filter(|gate| gate.level == GateLevel::Error)
                 .count()
-                + report
-                    .files
-                    .iter()
-                    .filter(|file| {
-                        file.findings
-                            .iter()
-                            .any(|finding| finding.severity == testament_core::Severity::Error)
-                    })
-                    .count()
         );
     }
 
     #[test]
-    fn junit_counts_failed_test_cases_not_individual_findings() {
+    fn junit_uses_the_same_gate_policy_as_the_cli() {
         let mut file = analyze_content(
             Path::new("spec/a_spec.rb"),
             "RSpec.describe(A) { it(\"works\") { expect(1).to eq(1) } }",
@@ -530,14 +529,14 @@ mod tests {
             files: vec![file],
             gates: Vec::new(),
             warnings: Vec::new(),
-            passed: false,
+            passed: true,
         };
 
         let junit = render_junit(&report);
 
         assert!(junit.contains("tests=\"1\""));
-        assert!(junit.contains("failures=\"1\""));
-        assert_eq!(junit.matches("<failure ").count(), 1);
+        assert!(junit.contains("failures=\"0\""));
+        assert_eq!(junit.matches("<failure ").count(), 0);
     }
 
     #[test]
@@ -575,7 +574,7 @@ mod tests {
 
         assert!(value.get("gates").is_none());
         assert!(
-            !parse_baseline_files(&baseline)["spec/a_spec.rb"]
+            !parse_baseline_files(&baseline).unwrap()["spec/a_spec.rb"]
                 .metric_ids
                 .is_empty()
         );

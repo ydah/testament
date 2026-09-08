@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::{Reader, XmlVersion};
 use serde_json::Value;
 use testament_adapter_api::{AdapterError, AdapterResult, EvidenceProvider};
 use testament_core::{
@@ -47,7 +49,7 @@ pub fn load_evidence(format: &str, path: &Path) -> AdapterResult<EvidenceSet> {
             ..EvidenceSet::default()
         },
         "cobertura" | "cobertura-xml" => EvidenceSet {
-            coverage: Some(parse_cobertura_xml(&content)),
+            coverage: Some(parse_cobertura_xml(&content)?),
             ..EvidenceSet::default()
         },
         "mutant-json" => EvidenceSet {
@@ -105,10 +107,7 @@ fn parse_simplecov_json(content: &str) -> AdapterResult<CoverageEvidence> {
 
     if let Some(files) = value.get("files").and_then(Value::as_object) {
         for (path, file) in files {
-            let file_coverage = parse_simplecov_file(file);
-            coverage
-                .files
-                .insert(normalize_json_path(path), file_coverage);
+            merge_file_coverage(&mut coverage, path, parse_simplecov_file(file));
         }
         return Ok(coverage);
     }
@@ -123,9 +122,7 @@ fn parse_simplecov_json(content: &str) -> AdapterResult<CoverageEvidence> {
                 continue;
             };
             for (path, file) in files {
-                coverage
-                    .files
-                    .insert(normalize_json_path(path), parse_simplecov_file(file));
+                merge_file_coverage(&mut coverage, path, parse_simplecov_file(file));
             }
         }
     }
@@ -157,57 +154,96 @@ fn parse_simplecov_file(file: &Value) -> FileCoverage {
         coverage.covered_lines.len(),
         coverage.executable_lines.len(),
     );
-    coverage.branch_rate = file
-        .get("branches")
-        .and_then(branch_rate_from_simplecov)
+    if let Some(branches) = file.get("branches") {
+        collect_simplecov_branch_coverage(
+            branches,
+            "branch",
+            &mut coverage.covered_branches,
+            &mut coverage.executable_branches,
+        );
+    }
+    coverage.branch_rate = coverage
+        .branch_coverage()
         .or_else(|| file.get("branch_coverage").and_then(Value::as_f64));
     coverage
 }
 
+#[cfg(test)]
 fn branch_rate_from_simplecov(value: &Value) -> Option<f64> {
-    let mut covered = 0_usize;
-    let mut total = 0_usize;
-    collect_simplecov_branch_coverage(value, &mut covered, &mut total);
-    ratio(covered, total)
+    let mut covered = BTreeSet::new();
+    let mut executable = BTreeSet::new();
+    collect_simplecov_branch_coverage(value, "branch", &mut covered, &mut executable);
+    ratio(covered.len(), executable.len())
 }
 
-fn collect_simplecov_branch_coverage(value: &Value, covered: &mut usize, total: &mut usize) {
+fn collect_simplecov_branch_coverage(
+    value: &Value,
+    key: &str,
+    covered: &mut BTreeSet<String>,
+    executable: &mut BTreeSet<String>,
+) {
     match value {
         Value::Array(values) => {
-            for value in values {
-                collect_simplecov_branch_coverage(value, covered, total);
+            for (index, value) in values.iter().enumerate() {
+                collect_simplecov_branch_coverage(
+                    value,
+                    &format!("{key}/{index}"),
+                    covered,
+                    executable,
+                );
             }
         }
         Value::Object(values) => {
             if let Some(hits) = values.get("coverage").and_then(Value::as_i64) {
-                *total += 1;
-                *covered += usize::from(hits > 0);
+                executable.insert(key.to_owned());
+                if hits > 0 {
+                    covered.insert(key.to_owned());
+                }
                 return;
             }
-            for value in values.values() {
-                collect_simplecov_branch_coverage(value, covered, total);
+            for (child_key, value) in values {
+                if matches!(
+                    child_key.as_str(),
+                    "start_line" | "start_column" | "end_line" | "end_column"
+                ) {
+                    continue;
+                }
+                collect_simplecov_branch_coverage(
+                    value,
+                    &format!("{key}/{child_key}"),
+                    covered,
+                    executable,
+                );
+            }
+        }
+        Value::Number(hits) => {
+            if let Some(hits) = hits.as_i64() {
+                executable.insert(key.to_owned());
+                if hits > 0 {
+                    covered.insert(key.to_owned());
+                }
             }
         }
         _ => {}
     }
 }
 
+fn merge_file_coverage(coverage: &mut CoverageEvidence, path: &str, file: FileCoverage) {
+    coverage
+        .files
+        .entry(normalize_json_path(path))
+        .or_default()
+        .merge(file);
+}
+
 fn parse_lcov(content: &str) -> CoverageEvidence {
     let mut evidence = CoverageEvidence::default();
     let mut current_path = None::<String>;
     let mut current = FileCoverage::default();
-    let mut branch_total = 0_usize;
-    let mut branch_covered = 0_usize;
 
     for line in content.lines() {
         if let Some(path) = line.strip_prefix("SF:") {
-            flush_lcov(
-                &mut evidence,
-                &mut current_path,
-                &mut current,
-                &mut branch_total,
-                &mut branch_covered,
-            );
+            flush_lcov(&mut evidence, &mut current_path, &mut current);
             current_path = Some(normalize_json_path(path));
         } else if let Some(data) = line.strip_prefix("DA:") {
             let mut parts = data.split(',');
@@ -220,32 +256,18 @@ fn parse_lcov(content: &str) -> CoverageEvidence {
                 }
             }
         } else if let Some(data) = line.strip_prefix("BRDA:") {
-            branch_total += 1;
-            if data
-                .rsplit(',')
-                .next()
-                .is_some_and(|hits| hits != "-" && hits != "0")
-            {
-                branch_covered += 1;
+            if let Some((branch, hits)) = data.rsplit_once(',') {
+                current.executable_branches.insert(branch.to_owned());
+                if hits != "-" && hits != "0" {
+                    current.covered_branches.insert(branch.to_owned());
+                }
             }
         } else if line == "end_of_record" {
-            flush_lcov(
-                &mut evidence,
-                &mut current_path,
-                &mut current,
-                &mut branch_total,
-                &mut branch_covered,
-            );
+            flush_lcov(&mut evidence, &mut current_path, &mut current);
         }
     }
 
-    flush_lcov(
-        &mut evidence,
-        &mut current_path,
-        &mut current,
-        &mut branch_total,
-        &mut branch_covered,
-    );
+    flush_lcov(&mut evidence, &mut current_path, &mut current);
     evidence
 }
 
@@ -253,54 +275,100 @@ fn flush_lcov(
     evidence: &mut CoverageEvidence,
     current_path: &mut Option<String>,
     current: &mut FileCoverage,
-    branch_total: &mut usize,
-    branch_covered: &mut usize,
 ) {
     let Some(path) = current_path.take() else {
         return;
     };
     current.line_rate = ratio(current.covered_lines.len(), current.executable_lines.len());
-    current.branch_rate = ratio(*branch_covered, *branch_total);
-    evidence.files.insert(path, std::mem::take(current));
-    *branch_total = 0;
-    *branch_covered = 0;
+    current.branch_rate = ratio(
+        current.covered_branches.len(),
+        current.executable_branches.len(),
+    );
+    evidence
+        .files
+        .entry(path)
+        .or_default()
+        .merge(std::mem::take(current));
 }
 
-fn parse_cobertura_xml(content: &str) -> CoverageEvidence {
+fn parse_cobertura_xml(content: &str) -> AdapterResult<CoverageEvidence> {
     let mut evidence = CoverageEvidence::default();
     let mut current_path = None::<String>;
     let mut current = FileCoverage::default();
-
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if line.starts_with("<class ") {
-            if let Some(path) = current_path.take() {
+    let mut reader = Reader::from_str(content);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) if element.name().as_ref() == b"class" => {
+                flush_cobertura(&mut evidence, &mut current_path, &mut current);
+                current_path = xml_attr(&reader, &element, b"filename")?
+                    .as_deref()
+                    .map(normalize_json_path);
                 current.line_rate =
-                    ratio(current.covered_lines.len(), current.executable_lines.len());
-                evidence.files.insert(path, std::mem::take(&mut current));
+                    xml_attr(&reader, &element, b"line-rate")?.and_then(|value| value.parse().ok());
+                current.branch_rate = xml_attr(&reader, &element, b"branch-rate")?
+                    .and_then(|value| value.parse().ok());
             }
-            current_path = attr(line, "filename").as_deref().map(normalize_json_path);
-            current.line_rate = attr(line, "line-rate").and_then(|value| value.parse().ok());
-            current.branch_rate = attr(line, "branch-rate").and_then(|value| value.parse().ok());
-        } else if line.starts_with("<line ") {
-            let line_no = attr(line, "number").and_then(|value| value.parse::<usize>().ok());
-            let hits = attr(line, "hits").and_then(|value| value.parse::<usize>().ok());
-            if let Some(line_no) = line_no {
-                current.executable_lines.insert(line_no);
-                if hits.unwrap_or_default() > 0 {
-                    current.covered_lines.insert(line_no);
+            Ok(Event::Start(element) | Event::Empty(element))
+                if element.name().as_ref() == b"line" =>
+            {
+                let line = xml_attr(&reader, &element, b"number")?
+                    .and_then(|value| value.parse::<usize>().ok());
+                let hits = xml_attr(&reader, &element, b"hits")?
+                    .and_then(|value| value.parse::<usize>().ok());
+                if let Some(line) = line {
+                    current.executable_lines.insert(line);
+                    if hits.unwrap_or_default() > 0 {
+                        current.covered_lines.insert(line);
+                    }
                 }
             }
+            Ok(Event::End(element)) if element.name().as_ref() == b"class" => {
+                flush_cobertura(&mut evidence, &mut current_path, &mut current);
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => return Err(AdapterError::new(error.to_string())),
         }
     }
+    flush_cobertura(&mut evidence, &mut current_path, &mut current);
+    Ok(evidence)
+}
 
-    if let Some(path) = current_path.take() {
-        current.line_rate = current
-            .line_rate
-            .or_else(|| ratio(current.covered_lines.len(), current.executable_lines.len()));
-        evidence.files.insert(path, current);
-    }
+fn flush_cobertura(
+    evidence: &mut CoverageEvidence,
+    path: &mut Option<String>,
+    coverage: &mut FileCoverage,
+) {
+    let Some(path) = path.take() else {
+        return;
+    };
+    coverage.line_rate = ratio(
+        coverage.covered_lines.len(),
+        coverage.executable_lines.len(),
+    )
+    .or(coverage.line_rate);
     evidence
+        .files
+        .entry(path)
+        .or_default()
+        .merge(std::mem::take(coverage));
+}
+
+fn xml_attr(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+    name: &[u8],
+) -> AdapterResult<Option<String>> {
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| AdapterError::new(error.to_string()))?;
+        if attribute.key.as_ref() == name {
+            return attribute
+                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .map(|value| Some(value.into_owned()))
+                .map_err(|error| AdapterError::new(error.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn parse_mutation_json(content: &str) -> AdapterResult<MutationEvidence> {
@@ -549,13 +617,6 @@ fn string_any(value: &Value, keys: &[&str]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn attr(line: &str, name: &str) -> Option<String> {
-    let needle = format!("{name}=\"");
-    let (_, rest) = line.split_once(&needle)?;
-    let (value, _) = rest.split_once('"')?;
-    Some(value.to_owned())
-}
-
 fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
     if denominator == 0 {
         None
@@ -659,6 +720,33 @@ end_of_record
         });
 
         assert_eq!(branch_rate_from_simplecov(&branches), Some(0.5));
+    }
+
+    #[test]
+    fn simplecov_merges_runs_and_numeric_branch_hits() {
+        let evidence = parse_simplecov_json(
+            r#"{
+              "run-a":{"coverage":{"lib/cart.rb":{"lines":[1,0],"branches":{"branch-1":{"then":1,"else":0}}}}},
+              "run-b":{"coverage":{"lib/cart.rb":{"lines":[0,1],"branches":{"branch-1":{"then":0,"else":1}}}}}
+            }"#,
+        )
+        .unwrap();
+        let file = &evidence.files["lib/cart.rb"];
+
+        assert_eq!(file.line_coverage(), Some(1.0));
+        assert_eq!(file.branch_coverage(), Some(1.0));
+    }
+
+    #[test]
+    fn parses_minified_cobertura_xml_structurally() {
+        let evidence = parse_cobertura_xml(
+            r#"<?xml version='1.0'?><coverage><packages><package><classes><class filename='lib/cart.rb' line-rate='0.5' branch-rate='0'><lines><line number='1' hits='1'/><line number='2' hits='0'/></lines></class></classes></package></packages></coverage>"#,
+        )
+        .unwrap();
+        let file = &evidence.files["lib/cart.rb"];
+
+        assert_eq!(file.line_coverage(), Some(0.5));
+        assert_eq!(file.branch_coverage(), Some(0.0));
     }
 
     #[test]

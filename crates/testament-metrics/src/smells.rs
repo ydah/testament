@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use testament_core::{
     Assertion, Axis, ExternalRefKind, Finding, HelperDef, MetricOutcome, Provenance, RuleConfig,
-    Severity, SourceSpan, TagKind, TestCase, TestFileIr,
+    Severity, SourceSpan, TagKind, TestCase, TestFileIr, case_has_assertion,
 };
 
 pub fn compute(ir: &TestFileIr, rules: &RuleConfig) -> MetricOutcome {
@@ -53,20 +53,7 @@ fn detect_unknown_test(
     rules: &RuleConfig,
     findings: &mut Vec<Finding>,
 ) {
-    let calls_configured_assertion = case.calls.iter().any(|call| {
-        rules
-            .extra_assertion_methods
-            .iter()
-            .any(|method| method == &call.method)
-    });
-    let calls_asserting_helper = case.calls.iter().any(|call| {
-        helpers
-            .iter()
-            .any(|helper| helper.contains_assertion && helper.name == call.method)
-    });
-    if case.assertions.is_empty()
-        && !calls_configured_assertion
-        && !calls_asserting_helper
+    if !case_has_assertion(case, helpers, &rules.extra_assertion_methods)
         && !case.has_tag(TagKind::Skipped)
         && !case.has_tag(TagKind::Pending)
     {
@@ -291,8 +278,10 @@ fn numbers_in(expression: &str) -> Vec<String> {
 
 fn assertion_key(assertion: &Assertion) -> String {
     format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         assertion.kind.as_str(),
+        assertion.matcher,
+        assertion.negative,
         assertion.subject_expr,
         assertion.expected_expr.clone().unwrap_or_default()
     )
@@ -326,14 +315,14 @@ fn severity_penalty(severity: Severity) -> f64 {
 }
 
 fn capped_penalty(findings: &[Finding], max_per_rule: usize) -> f64 {
-    let mut by_rule = BTreeMap::<&str, Vec<Severity>>::new();
+    let mut by_case_and_rule = BTreeMap::<(Option<&str>, &str), Vec<Severity>>::new();
     for finding in findings {
-        by_rule
-            .entry(&finding.rule_id)
+        by_case_and_rule
+            .entry((finding.case_id.as_deref(), &finding.rule_id))
             .or_default()
             .push(finding.severity);
     }
-    by_rule
+    by_case_and_rule
         .values_mut()
         .map(|severities| {
             severities.sort_by(|left, right| right.cmp(left));
