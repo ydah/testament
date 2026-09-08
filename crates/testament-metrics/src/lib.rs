@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::thread;
 
 use testament_core::{
-    AppConfig, Axis, EvidenceSet, FileReport, MetricOutcome, TestFileIr, axis_average,
-    evaluate_gates,
+    AppConfig, Axis, EvidenceSet, FileReport, GateDirection, GateLevel, GateViolation,
+    MetricOutcome, TestFileIr, axis_average, evaluate_gates,
 };
 
 pub use adapters::AdapterRegistry;
@@ -223,6 +223,7 @@ pub fn evaluate_project(
     config: &AppConfig,
 ) -> testament_core::ProjectReport {
     let gate_eval = evaluate_gates(config, &files);
+    let mut gates = gate_eval.violations;
     let warnings = files
         .iter()
         .filter(|file| file.ir.confidence == testament_core::Confidence::Unresolved)
@@ -232,11 +233,28 @@ pub fn evaluate_project(
                 file.ir.path_display()
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    gates.extend(
+        files
+            .iter()
+            .filter(|file| file.ir.confidence == testament_core::Confidence::Unresolved)
+            .map(|file| GateViolation {
+                metric_id: "analysis.parse".to_owned(),
+                path: file.ir.path_display(),
+                level: GateLevel::Error,
+                observed: 0.0,
+                threshold: 1.0,
+                direction: GateDirection::Min,
+                message: "Ruby syntax could not be parsed exactly".to_owned(),
+            }),
+    );
+    let passed = gates
+        .iter()
+        .all(|violation| violation.level != GateLevel::Error);
     testament_core::ProjectReport {
         files,
-        passed: gate_eval.passed,
-        gates: gate_eval.violations,
+        passed,
+        gates,
         warnings,
     }
 }
@@ -762,5 +780,12 @@ mod tests {
 
         let project = evaluate_project(vec![file], &AppConfig::default());
         assert_eq!(project.warnings.len(), 1);
+        assert!(!project.passed);
+        assert!(
+            project
+                .gates
+                .iter()
+                .any(|gate| gate.metric_id == "analysis.parse")
+        );
     }
 }

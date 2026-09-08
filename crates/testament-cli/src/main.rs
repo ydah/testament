@@ -98,6 +98,12 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<i32, String> {
+    if !cli.root.is_dir() {
+        return Err(format!(
+            "project root does not exist or is not a directory: {}",
+            cli.root.display()
+        ));
+    }
     let config_path = cli
         .config
         .as_deref()
@@ -149,7 +155,7 @@ fn baseline(root: &Path, config_path: &Path, args: BaselineArgs) -> Result<i32, 
     if let Some(parent) = baseline.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    fs::write(&baseline, render_baseline(&project)).map_err(|error| error.to_string())?;
+    write_atomic(&baseline, render_baseline(&project).as_bytes())?;
     println!("wrote {}", baseline.display());
     Ok(0)
 }
@@ -223,6 +229,9 @@ fn analyze_project(
             .map(|path| resolve_path(root, path))
             .collect()
     };
+    if paths.is_empty() {
+        return Err("no test files matched the configured paths".to_owned());
+    }
     let evidence = load_configured_evidence(root, &config.evidence.inputs());
     print_evidence_warnings(&evidence);
     let mut files = analyze_paths_with_evidence(&paths, &config, &evidence)
@@ -262,8 +271,9 @@ fn apply_ratchet(
         return Ok(());
     }
 
-    let content = fs::read_to_string(baseline).map_err(|error| error.to_string())?;
-    let baseline_files = parse_baseline_files(&content);
+    let content = fs::read_to_string(&baseline).map_err(|error| error.to_string())?;
+    let baseline_files = parse_baseline_files(&content)
+        .map_err(|error| format!("invalid baseline {}: {error}", baseline.display()))?;
     let mut evaluation = evaluate_ratchet_with_metrics(
         &baseline_files,
         config.ratchet.tolerance,
@@ -304,6 +314,7 @@ fn changed_test_files(root: &Path, base: &str, config: &AppConfig) -> Result<Vec
     let output = Command::new("git")
         .arg("diff")
         .arg("--name-only")
+        .arg("-z")
         .arg("--diff-filter=ACMRTUXB")
         .arg(base)
         .current_dir(root)
@@ -314,10 +325,16 @@ fn changed_test_files(root: &Path, base: &str, config: &AppConfig) -> Result<Vec
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
 
-    let paths = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(PathBuf::from)
+    Ok(changed_paths_from_output(root, &output.stdout, config))
+}
+
+fn changed_paths_from_output(root: &Path, output: &[u8], config: &AppConfig) -> Vec<PathBuf> {
+    output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
         .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("rb"))
+        .filter(|path| !testament_core::matches_any_ignore(path, &config.ignore_paths))
         .filter(|path| {
             let normalized = path.to_string_lossy().replace('\\', "/");
             config.test_globs.iter().any(|pattern| {
@@ -325,8 +342,20 @@ fn changed_test_files(root: &Path, base: &str, config: &AppConfig) -> Result<Vec
             })
         })
         .map(|path| resolve_path(root, &path))
-        .collect();
-    Ok(paths)
+        .collect()
+}
+
+fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid baseline path: {}", path.display()))?;
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", process::id()));
+    fs::write(&temporary, content).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        error.to_string()
+    })
 }
 
 fn resolve_path(root: &Path, path: &Path) -> PathBuf {
@@ -390,5 +419,19 @@ mod tests {
     fn parses_rename_tracking_opt_out() {
         let cli = Cli::parse_from(["testament", "check", "--no-rename-tracking"]);
         assert!(cli.no_rename_tracking);
+    }
+
+    #[test]
+    fn nul_delimited_diff_paths_preserve_unicode_and_apply_ignores() {
+        let mut config = AppConfig::default();
+        config.ignore_paths = vec!["spec/ignored_*".to_owned()];
+
+        let paths = changed_paths_from_output(
+            Path::new("/work"),
+            "spec/日本語_spec.rb\0spec/ignored_spec.rb\0".as_bytes(),
+            &config,
+        );
+
+        assert_eq!(paths, vec![PathBuf::from("/work/spec/日本語_spec.rb")]);
     }
 }

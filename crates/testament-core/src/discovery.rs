@@ -5,6 +5,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn discover_test_files(root: &Path, config: &AppConfig) -> io::Result<Vec<PathBuf>> {
+    if !root.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "project root does not exist or is not a directory: {}",
+                root.display()
+            ),
+        ));
+    }
+    validate_patterns(&config.test_globs)?;
+    validate_patterns(&config.ignore_paths)?;
     let mut files = Vec::new();
     visit(root, root, config, &mut files)?;
     files.sort();
@@ -28,10 +39,6 @@ fn visit(
     config: &AppConfig,
     files: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
-    if !current.exists() {
-        return Ok(());
-    }
-
     for entry in fs::read_dir(current)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -70,6 +77,22 @@ fn visit(
         }
     }
 
+    Ok(())
+}
+
+fn validate_patterns(patterns: &[String]) -> io::Result<()> {
+    for pattern in patterns {
+        GlobBuilder::new(&normalize_pattern(pattern))
+            .literal_separator(true)
+            .backslash_escape(false)
+            .build()
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid glob `{pattern}`: {error}"),
+                )
+            })?;
+    }
     Ok(())
 }
 
@@ -114,5 +137,20 @@ mod tests {
             "spec/models/user_spec.rb",
             "spec/*_spec.rb"
         ));
+    }
+
+    #[test]
+    fn missing_roots_and_invalid_globs_are_errors() {
+        assert!(
+            discover_test_files(
+                Path::new("definitely-missing-testament-root"),
+                &AppConfig::default()
+            )
+            .is_err()
+        );
+
+        let mut config = AppConfig::default();
+        config.test_globs = vec!["[".to_owned()];
+        assert!(discover_test_files(Path::new("."), &config).is_err());
     }
 }

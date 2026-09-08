@@ -575,7 +575,7 @@ mod tests {
 
         assert!(value.get("gates").is_none());
         assert!(
-            !parse_baseline_files(&baseline)["spec/a_spec.rb"]
+            !parse_baseline_files(&baseline).unwrap()["spec/a_spec.rb"]
                 .metric_ids
                 .is_empty()
         );

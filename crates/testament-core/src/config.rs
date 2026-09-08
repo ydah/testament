@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use globset::GlobBuilder;
 use serde::Deserialize;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,11 +27,12 @@ impl AppConfig {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
     }
 
-    pub fn try_parse(input: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str::<RawConfig>(input).map(Self::from_raw)
+    pub fn try_parse(input: &str) -> Result<Self, String> {
+        let raw = toml::from_str::<RawConfig>(input).map_err(|error| error.to_string())?;
+        Self::from_raw(raw)
     }
 
-    fn from_raw(raw: RawConfig) -> Self {
+    fn from_raw(raw: RawConfig) -> Result<Self, String> {
         let mut config = Self::default();
         if let Some(project) = raw.project {
             if let Some(languages) = project.languages {
@@ -53,7 +55,7 @@ impl AppConfig {
                         .level
                         .map(GateLevel::from)
                         .unwrap_or(GateLevel::Error),
-                    when_evidence_available: raw_gate.when.as_deref() == Some("evidence-available"),
+                    when_evidence_available: raw_gate.when.is_some(),
                     target: raw_gate.target.map(GateTarget::from).unwrap_or_else(|| {
                         if raw_gate.min.is_none() && raw_gate.max.is_some() {
                             GateTarget::Value
@@ -88,7 +90,44 @@ impl AppConfig {
         if let Some(rules) = raw.rules {
             config.rules.apply_raw(rules);
         }
-        config
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for pattern in self.test_globs.iter().chain(&self.ignore_paths) {
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .backslash_escape(false)
+                .build()
+                .map_err(|error| format!("invalid glob `{pattern}`: {error}"))?;
+        }
+        for gate in &self.gates {
+            if gate.min.is_none() && gate.max.is_none() {
+                return Err(format!("gate `{}` requires `min` or `max`", gate.metric_id));
+            }
+            if gate
+                .min
+                .into_iter()
+                .chain(gate.max)
+                .any(|value| !value.is_finite())
+            {
+                return Err(format!(
+                    "gate `{}` requires finite thresholds",
+                    gate.metric_id
+                ));
+            }
+            if gate.min.zip(gate.max).is_some_and(|(min, max)| min > max) {
+                return Err(format!(
+                    "gate `{}` has min greater than max",
+                    gate.metric_id
+                ));
+            }
+        }
+        if !self.ratchet.tolerance.is_finite() || self.ratchet.tolerance < 0.0 {
+            return Err("ratchet tolerance must be a finite non-negative number".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -359,12 +398,19 @@ struct RawEvidenceInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawGate {
     min: Option<f64>,
     max: Option<f64>,
     level: Option<RawGateLevel>,
-    when: Option<String>,
+    when: Option<RawGateWhen>,
     target: Option<RawGateTarget>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RawGateWhen {
+    EvidenceAvailable,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -483,6 +529,42 @@ mod tests {
             AppConfig::try_parse(
                 r#"[gates]
                 "adequacy.assertion_density" = { min = 0.5, level = "warm" }"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_gate_and_ratchet_values() {
+        for input in [
+            r#"[gates]
+            "adequacy.assertion_density" = { mni = 0.5 }"#,
+            r#"[gates]
+            "adequacy.assertion_density" = {}"#,
+            r#"[gates]
+            "adequacy.assertion_density" = { min = 0.8, max = 0.2 }"#,
+            r#"[gates]
+            "adequacy.assertion_density" = { min = nan }"#,
+            r#"[ratchet]
+            tolerance = nan"#,
+        ] {
+            assert!(AppConfig::try_parse(input).is_err(), "accepted {input}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_globs_and_gate_conditions() {
+        assert!(
+            AppConfig::try_parse(
+                r#"[project]
+                test_globs = ["["]"#
+            )
+            .is_err()
+        );
+        assert!(
+            AppConfig::try_parse(
+                r#"[gates]
+                "adequacy.assertion_density" = { min = 0.5, when = "sometimes" }"#
             )
             .is_err()
         );
