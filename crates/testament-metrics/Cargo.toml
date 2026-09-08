@@ -14,7 +14,7 @@ description = "Quality metric computation for testament test IR"
 
 [dependencies]
 serde_json.workspace = true
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 testament-adapter-api.workspace = true
 testament-core.workspace = true
 testament-fw-minitest.workspace = true
