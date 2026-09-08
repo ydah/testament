@@ -423,8 +423,10 @@ mod tests {
 
     #[test]
     fn nul_delimited_diff_paths_preserve_unicode_and_apply_ignores() {
-        let mut config = AppConfig::default();
-        config.ignore_paths = vec!["spec/ignored_*".to_owned()];
+        let config = AppConfig {
+            ignore_paths: vec!["spec/ignored_*".to_owned()],
+            ..AppConfig::default()
+        };
 
         let paths = changed_paths_from_output(
             Path::new("/work"),

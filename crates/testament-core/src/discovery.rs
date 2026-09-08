@@ -149,8 +149,10 @@ mod tests {
             .is_err()
         );
 
-        let mut config = AppConfig::default();
-        config.test_globs = vec!["[".to_owned()];
+        let config = AppConfig {
+            test_globs: vec!["[".to_owned()],
+            ..AppConfig::default()
+        };
         assert!(discover_test_files(Path::new("."), &config).is_err());
     }
 }
