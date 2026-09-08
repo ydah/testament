@@ -21,10 +21,10 @@ impl EvidenceSet {
 
     pub fn merge(&mut self, other: EvidenceSet) {
         if let Some(other_coverage) = other.coverage {
-            self.coverage
-                .get_or_insert_with(CoverageEvidence::default)
-                .files
-                .extend(other_coverage.files);
+            let coverage = self.coverage.get_or_insert_with(CoverageEvidence::default);
+            for (path, file) in other_coverage.files {
+                coverage.files.entry(path).or_default().merge(file);
+            }
         }
         if let Some(other_mutation) = other.mutation {
             merge_mutation(
@@ -89,12 +89,16 @@ impl CoverageEvidence {
             .get(&normalized)
             .or_else(|| self.files.get(normalized.trim_start_matches("./")))
             .or_else(|| {
-                self.files
+                let matches = self
+                    .files
                     .iter()
-                    .find(|(candidate, _)| {
+                    .filter(|(candidate, _)| {
                         Path::new(&normalized).ends_with(Path::new(candidate.as_str()))
+                            || Path::new(candidate.as_str()).ends_with(Path::new(&normalized))
                     })
                     .map(|(_, coverage)| coverage)
+                    .collect::<Vec<_>>();
+                (matches.len() == 1).then(|| matches[0])
             })
     }
 }
@@ -105,9 +109,30 @@ pub struct FileCoverage {
     pub branch_rate: Option<f64>,
     pub covered_lines: BTreeSet<usize>,
     pub executable_lines: BTreeSet<usize>,
+    pub covered_branches: BTreeSet<String>,
+    pub executable_branches: BTreeSet<String>,
 }
 
 impl FileCoverage {
+    pub fn merge(&mut self, other: Self) {
+        let line_rate = self.line_rate.or(other.line_rate);
+        let branch_rate = self.branch_rate.or(other.branch_rate);
+        self.covered_lines.extend(other.covered_lines);
+        self.executable_lines.extend(other.executable_lines);
+        self.covered_branches.extend(other.covered_branches);
+        self.executable_branches.extend(other.executable_branches);
+        self.line_rate = if self.executable_lines.is_empty() {
+            line_rate
+        } else {
+            Some(self.covered_lines.len() as f64 / self.executable_lines.len() as f64)
+        };
+        self.branch_rate = if self.executable_branches.is_empty() {
+            branch_rate
+        } else {
+            Some(self.covered_branches.len() as f64 / self.executable_branches.len() as f64)
+        };
+    }
+
     pub fn line_coverage(&self) -> Option<f64> {
         self.line_rate.or_else(|| {
             if self.executable_lines.is_empty() {
@@ -119,7 +144,11 @@ impl FileCoverage {
     }
 
     pub fn branch_coverage(&self) -> Option<f64> {
-        self.branch_rate
+        if self.executable_branches.is_empty() {
+            self.branch_rate
+        } else {
+            Some(self.covered_branches.len() as f64 / self.executable_branches.len() as f64)
+        }
     }
 }
 
@@ -187,6 +216,11 @@ mod tests {
                 .file_for_path(Path::new("/work/lib/cart.rb"))
                 .is_some()
         );
+        let mut absolute = CoverageEvidence::default();
+        absolute
+            .files
+            .insert("/work/lib/cart.rb".to_owned(), FileCoverage::default());
+        assert!(absolute.file_for_path(Path::new("lib/cart.rb")).is_some());
         assert!(
             evidence
                 .file_for_path(Path::new("/work/lib/shopping_cart.rb"))
@@ -210,5 +244,40 @@ mod tests {
         });
 
         assert_eq!(left.coverage.unwrap().files.len(), 2);
+    }
+
+    #[test]
+    fn merging_coverage_combines_lines_for_the_same_file() {
+        let mut left = EvidenceSet {
+            coverage: Some(CoverageEvidence {
+                files: BTreeMap::from([(
+                    "lib/a.rb".to_owned(),
+                    FileCoverage {
+                        covered_lines: BTreeSet::from([1]),
+                        executable_lines: BTreeSet::from([1, 2]),
+                        ..FileCoverage::default()
+                    },
+                )]),
+            }),
+            ..EvidenceSet::default()
+        };
+        left.merge(EvidenceSet {
+            coverage: Some(CoverageEvidence {
+                files: BTreeMap::from([(
+                    "lib/a.rb".to_owned(),
+                    FileCoverage {
+                        covered_lines: BTreeSet::from([2]),
+                        executable_lines: BTreeSet::from([1, 2]),
+                        ..FileCoverage::default()
+                    },
+                )]),
+            }),
+            ..EvidenceSet::default()
+        });
+
+        assert_eq!(
+            left.coverage.unwrap().files["lib/a.rb"].line_coverage(),
+            Some(1.0)
+        );
     }
 }

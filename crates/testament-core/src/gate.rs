@@ -1,5 +1,6 @@
 use crate::config::{AppConfig, GateLevel, GateTarget};
 use crate::metric::FileReport;
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,38 +248,67 @@ fn baseline_for_path(baseline_scores: &BTreeMap<String, f64>, path: &str) -> Opt
         .map(|(candidate, score, _)| (candidate.clone(), score))
 }
 
-pub fn parse_baseline_scores(input: &str) -> BTreeMap<String, f64> {
-    parse_baseline_files(input)
+pub fn parse_baseline_scores(input: &str) -> Result<BTreeMap<String, f64>, String> {
+    Ok(parse_baseline_files(input)?
         .into_iter()
         .map(|(path, file)| (path, file.score))
-        .collect()
+        .collect())
 }
 
-pub fn parse_baseline_files(input: &str) -> BTreeMap<String, BaselineFile> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
-        return BTreeMap::new();
-    };
-    value
-        .get("files")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|file| {
-            Some((
-                file.get("path")?.as_str()?.to_owned(),
+pub fn parse_baseline_files(input: &str) -> Result<BTreeMap<String, BaselineFile>, String> {
+    let raw: RawBaseline = serde_json::from_str(input).map_err(|error| error.to_string())?;
+    if raw.version != 1 {
+        return Err(format!("unsupported baseline version {}", raw.version));
+    }
+
+    let mut files = BTreeMap::new();
+    for file in raw.files {
+        if file.path.is_empty() || !file.score.is_finite() || !(0.0..=1.0).contains(&file.score) {
+            return Err(format!("invalid baseline entry for `{}`", file.path));
+        }
+        let metric_ids = file
+            .metrics
+            .into_iter()
+            .map(|metric| metric.id)
+            .collect::<BTreeSet<_>>();
+        if metric_ids.is_empty() || metric_ids.iter().any(String::is_empty) {
+            return Err(format!("baseline entry `{}` requires metrics", file.path));
+        }
+        if files
+            .insert(
+                file.path.clone(),
                 BaselineFile {
-                    score: file.get("score")?.as_f64()?,
-                    metric_ids: file
-                        .get("metrics")
-                        .and_then(serde_json::Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|metric| metric.get("id")?.as_str().map(ToOwned::to_owned))
-                        .collect(),
+                    score: file.score,
+                    metric_ids,
                 },
-            ))
-        })
-        .collect()
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate baseline path `{}`", file.path));
+        }
+    }
+    Ok(files)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBaseline {
+    version: u64,
+    files: Vec<RawBaselineFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBaselineFile {
+    path: String,
+    score: f64,
+    metrics: Vec<RawBaselineMetric>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBaselineMetric {
+    id: String,
 }
 
 fn path_similarity(left: &str, right: &str) -> f64 {
@@ -331,23 +361,27 @@ mod tests {
         let scores = parse_baseline_scores(
             r#"
             {
+              "version": 1,
               "files": [
                 {
                   "path": "spec/user_spec.rb",
-                  "score": 0.900
+                  "score": 0.900,
+                  "metrics": [{"id":"adequacy.assertion_density"}]
                 }
               ]
             }
             "#,
-        );
+        )
+        .unwrap();
         assert_eq!(scores.get("spec/user_spec.rb"), Some(&0.9));
     }
 
     #[test]
     fn parses_minified_baselines_without_key_order_dependencies() {
         let scores = parse_baseline_scores(
-            r#"{"gates":[{"path":"wrong.rb"}],"files":[{"score":0.75,"path":"spec/right_spec.rb"}]}"#,
-        );
+            r#"{"version":1,"files":[{"score":0.75,"path":"spec/right_spec.rb","metrics":[{"id":"adequacy.assertion_density"}]}]}"#,
+        )
+        .unwrap();
 
         assert_eq!(
             scores,
@@ -381,8 +415,9 @@ mod tests {
     #[test]
     fn ratchet_skips_files_with_different_metric_sets() {
         let baseline = parse_baseline_files(
-            r#"{"files":[{"path":"spec/a_spec.rb","score":0.9,"metrics":[{"id":"adequacy.line_coverage"}]}]}"#,
-        );
+            r#"{"version":1,"files":[{"path":"spec/a_spec.rb","score":0.9,"metrics":[{"id":"adequacy.line_coverage"}]}]}"#,
+        )
+        .unwrap();
         let mut ir = TestFileIr::new("spec/a_spec.rb", "ruby", "rspec");
         ir.confidence = Confidence::Exact;
         let file = FileReport {
@@ -437,5 +472,17 @@ mod tests {
 
         let evaluation = evaluate_ratchet_with_metrics(&baseline, 0.0, &files, false);
         assert!(evaluation.violations.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_and_incomplete_baselines() {
+        for input in [
+            "{",
+            r#"{"version":2,"files":[]}"#,
+            r#"{"version":1,"files":[{"path":"spec/a_spec.rb","score":0.5}]}"#,
+            r#"{"version":1,"files":[{"path":"spec/a_spec.rb","score":0.5,"metrics":[]},{"path":"spec/a_spec.rb","score":0.4,"metrics":[{"id":"x"}]}]}"#,
+        ] {
+            assert!(parse_baseline_files(input).is_err(), "accepted {input}");
+        }
     }
 }
