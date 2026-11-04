@@ -298,23 +298,23 @@ fn parse_cobertura_xml(content: &str) -> AdapterResult<CoverageEvidence> {
     let mut reader = Reader::from_str(content);
     loop {
         match reader.read_event() {
-            Ok(Event::Start(element)) if element.name().as_ref() == b"class" => {
+            Ok(Event::Start(element)) if element.name().as_ref() == "class" => {
                 flush_cobertura(&mut evidence, &mut current_path, &mut current);
-                current_path = xml_attr(&reader, &element, b"filename")?
+                current_path = xml_attr(&element, "filename")?
                     .as_deref()
                     .map(normalize_json_path);
                 current.line_rate =
-                    xml_attr(&reader, &element, b"line-rate")?.and_then(|value| value.parse().ok());
-                current.branch_rate = xml_attr(&reader, &element, b"branch-rate")?
-                    .and_then(|value| value.parse().ok());
+                    xml_attr(&element, "line-rate")?.and_then(|value| value.parse().ok());
+                current.branch_rate =
+                    xml_attr(&element, "branch-rate")?.and_then(|value| value.parse().ok());
             }
             Ok(Event::Start(element) | Event::Empty(element))
-                if element.name().as_ref() == b"line" =>
+                if element.name().as_ref() == "line" =>
             {
-                let line = xml_attr(&reader, &element, b"number")?
-                    .and_then(|value| value.parse::<usize>().ok());
-                let hits = xml_attr(&reader, &element, b"hits")?
-                    .and_then(|value| value.parse::<usize>().ok());
+                let line =
+                    xml_attr(&element, "number")?.and_then(|value| value.parse::<usize>().ok());
+                let hits =
+                    xml_attr(&element, "hits")?.and_then(|value| value.parse::<usize>().ok());
                 if let Some(line) = line {
                     current.executable_lines.insert(line);
                     if hits.unwrap_or_default() > 0 {
@@ -322,7 +322,7 @@ fn parse_cobertura_xml(content: &str) -> AdapterResult<CoverageEvidence> {
                     }
                 }
             }
-            Ok(Event::End(element)) if element.name().as_ref() == b"class" => {
+            Ok(Event::End(element)) if element.name().as_ref() == "class" => {
                 flush_cobertura(&mut evidence, &mut current_path, &mut current);
             }
             Ok(Event::Eof) => break,
@@ -354,16 +354,12 @@ fn flush_cobertura(
         .merge(std::mem::take(coverage));
 }
 
-fn xml_attr(
-    reader: &Reader<&[u8]>,
-    element: &BytesStart<'_>,
-    name: &[u8],
-) -> AdapterResult<Option<String>> {
+fn xml_attr(element: &BytesStart<'_>, name: &str) -> AdapterResult<Option<String>> {
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| AdapterError::new(error.to_string()))?;
         if attribute.key.as_ref() == name {
             return attribute
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .normalized_value(XmlVersion::Implicit1_0)
                 .map(|value| Some(value.into_owned()))
                 .map_err(|error| AdapterError::new(error.to_string()));
         }
@@ -747,6 +743,20 @@ end_of_record
 
         assert_eq!(file.line_coverage(), Some(0.5));
         assert_eq!(file.branch_coverage(), Some(0.0));
+    }
+
+    #[test]
+    fn parses_cobertura_unicode_paths_and_entities() {
+        let evidence = parse_cobertura_xml(
+            r#"<coverage><class filename="lib/日本語&amp;cart.rb"><line number="1" hits="1"/></class></coverage>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            evidence.files["lib/日本語&cart.rb"].line_coverage(),
+            Some(1.0)
+        );
+        assert!(parse_cobertura_xml(r#"<class filename="&unknown;"></class>"#).is_err());
+        assert!(parse_cobertura_xml(r#"<class filename="cart.rb"></coverage>"#).is_err());
     }
 
     #[test]
